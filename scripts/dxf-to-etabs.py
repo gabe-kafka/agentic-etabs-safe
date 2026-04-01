@@ -340,8 +340,8 @@ def check_layer_zero(entities, tolerance, doc):
 def check_unexploded_blocks(entities, tolerance, doc):
     """Flag INSERT (block reference) entities.
 
-    ETABS returns an import error on INSERT entities. All blocks must be
-    exploded to primitive geometry (LINE, ARC, 3DFACE) before import.
+    ETABS can handle blocks in some import modes. Flagged as info for
+    awareness — blocks may need exploding depending on import path.
     """
     issues = []
     for ent in entities:
@@ -349,9 +349,8 @@ def check_unexploded_blocks(entities, tolerance, doc):
             continue
         block_name = ent.dxf.name
         issues.append(issue(
-            "unexploded_block", "error", ent,
-            f"Block '{block_name}' — ETABS errors on block references. "
-            f"Must explode to LINE/ARC/3DFACE before import",
+            "unexploded_block", "info", ent,
+            f"Block reference '{block_name}'",
             block_name=block_name,
         ))
     return issues
@@ -439,11 +438,12 @@ def check_fragmented_curves(entities, tolerance, doc):
 
 
 def check_lwpolyline(entities, tolerance, doc):
-    """ETABS silently ignores LWPOLYLINE entities.
+    """Flag LWPOLYLINE entities for awareness.
 
-    Modern AutoCAD creates LWPOLYLINE by default. ETABS only reads classic
-    POLYLINE, LINE, ARC, and 3DFACE. Any LWPOLYLINE in the file will vanish
-    on import with no warning — walls, slabs, and column outlines disappear.
+    LWPOLYLINE is the default polyline type in modern AutoCAD. ETABS
+    generally handles these, but older ETABS versions or certain import
+    modes may have issues. Flagged as info so the user knows what's in
+    the file — not necessarily a problem.
     """
     issues = []
     for ent in entities:
@@ -453,16 +453,9 @@ def check_lwpolyline(entities, tolerance, doc):
         pts = list(ent.get_points(format="xy"))
         closed = ent.is_closed
         desc = "closed" if closed else "open"
-        # Closed LWPOLYLINE on structural layers = lost area element
-        layer_lower = layer.lower()
-        is_structural = any(h in layer_lower for h in
-                           AREA_LAYER_HINTS | {"beam", "col", "brace", "etabs"})
-        severity = "error" if is_structural else "warning"
         issues.append(issue(
-            "lwpolyline_ignored", severity, ent,
-            f"LWPOLYLINE ({desc}, {len(pts)} verts) on '{layer}' — "
-            f"ETABS silently skips LWPOLYLINE. Must explode to LINEs "
-            f"or convert to classic POLYLINE/3DFACE",
+            "lwpolyline", "info", ent,
+            f"LWPOLYLINE ({desc}, {len(pts)} verts) on '{layer}'",
             vertex_count=len(pts),
             closed=closed,
         ))
