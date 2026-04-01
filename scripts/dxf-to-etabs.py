@@ -3,12 +3,15 @@
 Catches what ETABS will choke on or silently corrupt before you import.
 Every check maps to a specific ETABS import behavior:
 
+  - LWPOLYLINE entities   → ETABS silently ignores (the #1 gotcha)
   - Duplicate entities    → doubled stiffness (ETABS imports both)
+  - Unexploded blocks     → ETABS errors on INSERT entities
   - Stray Z coordinates   → joint merge failures, wrong elevations
+  - Origin distance       → float precision loss breaks connectivity
   - Open polylines        → ETABS reads as lines, not area elements
-  - Unexploded blocks     → ETABS skips INSERT entities entirely
   - Layer 0 / Defpoints   → ETABS silently drops these on import
   - Near-miss endpoints   → disconnected joints, load path breaks
+  - Unsupported entities  → SPLINE, ELLIPSE, etc. vanish on import
   - Zero-length lines     → meshing failures, division by zero
   - Fragmented curves     → dozens of tiny beam elements per curve
 
@@ -335,15 +338,20 @@ def check_layer_zero(entities, tolerance, doc):
 
 
 def check_unexploded_blocks(entities, tolerance, doc):
-    """Flag INSERT (block reference) entities."""
+    """Flag INSERT (block reference) entities.
+
+    ETABS returns an import error on INSERT entities. All blocks must be
+    exploded to primitive geometry (LINE, ARC, 3DFACE) before import.
+    """
     issues = []
     for ent in entities:
         if ent.dxftype() != "INSERT":
             continue
         block_name = ent.dxf.name
         issues.append(issue(
-            "unexploded_block", "warning", ent,
-            f"Block reference '{block_name}' — ETABS cannot read blocks",
+            "unexploded_block", "error", ent,
+            f"Block '{block_name}' — ETABS errors on block references. "
+            f"Must explode to LINE/ARC/3DFACE before import",
             block_name=block_name,
         ))
     return issues
@@ -430,13 +438,127 @@ def check_fragmented_curves(entities, tolerance, doc):
     return issues
 
 
+def check_lwpolyline(entities, tolerance, doc):
+    """ETABS silently ignores LWPOLYLINE entities.
+
+    Modern AutoCAD creates LWPOLYLINE by default. ETABS only reads classic
+    POLYLINE, LINE, ARC, and 3DFACE. Any LWPOLYLINE in the file will vanish
+    on import with no warning — walls, slabs, and column outlines disappear.
+    """
+    issues = []
+    for ent in entities:
+        if ent.dxftype() != "LWPOLYLINE":
+            continue
+        layer = ent.dxf.layer
+        pts = list(ent.get_points(format="xy"))
+        closed = ent.is_closed
+        desc = "closed" if closed else "open"
+        # Closed LWPOLYLINE on structural layers = lost area element
+        layer_lower = layer.lower()
+        is_structural = any(h in layer_lower for h in
+                           AREA_LAYER_HINTS | {"beam", "col", "brace", "etabs"})
+        severity = "error" if is_structural else "warning"
+        issues.append(issue(
+            "lwpolyline_ignored", severity, ent,
+            f"LWPOLYLINE ({desc}, {len(pts)} verts) on '{layer}' — "
+            f"ETABS silently skips LWPOLYLINE. Must explode to LINEs "
+            f"or convert to classic POLYLINE/3DFACE",
+            vertex_count=len(pts),
+            closed=closed,
+        ))
+    return issues
+
+
+def check_origin_distance(entities, tolerance, doc):
+    """Flag geometry far from origin — floating-point precision loss.
+
+    CSI docs: ratio of max coordinate to model dimension should be < 10,000.
+    Large absolute coords (survey coordinates) cause joints that should be
+    coincident to drift apart, breaking connectivity after import.
+    """
+    issues = []
+    all_pts = []
+    for ent in entities:
+        all_pts.extend(entity_endpoints(ent))
+    if not all_pts:
+        return issues
+
+    xs = [abs(p[0]) for p in all_pts]
+    ys = [abs(p[1]) for p in all_pts]
+    max_coord = max(max(xs), max(ys))
+
+    # Model extent
+    x_range = max(p[0] for p in all_pts) - min(p[0] for p in all_pts)
+    y_range = max(p[1] for p in all_pts) - min(p[1] for p in all_pts)
+    model_dim = max(x_range, y_range, 1.0)
+
+    ratio = max_coord / model_dim
+    if ratio > 5000:
+        # Create a synthetic issue — no single entity is the problem
+        severity = "error" if ratio > 10000 else "warning"
+        # Use the first entity as the issue anchor
+        anchor = entities[0] if entities else None
+        if anchor:
+            issues.append(issue(
+                "origin_distance", severity, anchor,
+                f"Geometry far from origin: max coord = {max_coord:.0f}, "
+                f"model extent = {model_dim:.0f}, ratio = {ratio:.0f}. "
+                f"CSI limit is 10,000. Move geometry to origin before import "
+                f"to prevent floating-point joint merge failures",
+                max_coordinate=round(max_coord, 2),
+                model_dimension=round(model_dim, 2),
+                ratio=round(ratio, 1),
+            ))
+    return issues
+
+
+def check_unsupported_entities(entities, tolerance, doc):
+    """Flag entity types that ETABS cannot import.
+
+    ETABS reads: LINE, ARC, POLYLINE (classic), 3DFACE, CIRCLE (limited).
+    Everything else is silently skipped. If structural geometry uses
+    SPLINE, ELLIPSE, HATCH, etc., it will vanish on import.
+    """
+    ETABS_SUPPORTED = {"LINE", "ARC", "CIRCLE", "POLYLINE", "3DFACE", "SOLID"}
+    ETABS_ANNOTATION = {"TEXT", "MTEXT", "DIMENSION", "LEADER", "MLEADER",
+                        "TABLE", "VIEWPORT", "HATCH", "IMAGE", "WIPEOUT"}
+    issues = []
+    for ent in entities:
+        dxftype = ent.dxftype()
+        if dxftype in ETABS_SUPPORTED or dxftype == "LWPOLYLINE":
+            continue  # LWPOLYLINE handled by its own check
+        if dxftype in ETABS_ANNOTATION:
+            continue  # Annotation is expected to be skipped
+        if dxftype == "INSERT":
+            continue  # Handled by unexploded_blocks check
+        # Anything else is unsupported structural geometry
+        layer_lower = ent.dxf.layer.lower()
+        is_structural = any(h in layer_lower for h in
+                           AREA_LAYER_HINTS | {"beam", "col", "brace", "etabs"})
+        if is_structural:
+            issues.append(issue(
+                "unsupported_entity", "error", ent,
+                f"{dxftype} on structural layer '{ent.dxf.layer}' — "
+                f"ETABS cannot import {dxftype}. Convert to LINE/ARC/3DFACE",
+            ))
+        else:
+            issues.append(issue(
+                "unsupported_entity", "info", ent,
+                f"{dxftype} on '{ent.dxf.layer}' — ETABS will skip this",
+            ))
+    return issues
+
+
 ALL_CHECKS = [
     check_duplicates,
     check_near_miss_endpoints,
     check_stray_z,
+    check_lwpolyline,
     check_open_polylines,
     check_layer_zero,
     check_unexploded_blocks,
+    check_unsupported_entities,
+    check_origin_distance,
     check_zero_length,
     check_fragmented_curves,
 ]
@@ -771,19 +893,161 @@ def _close_polylines(doc, tolerance):
     return count
 
 
+def _convert_lwpolylines(doc):
+    """Convert LWPOLYLINE entities to LINE segments.
+
+    ETABS silently ignores LWPOLYLINE (the modern AutoCAD default).
+    Convert each LWPOLYLINE to a series of LINE entities on the same layer.
+    For closed LWPOLYLINEs, also create a 3DFACE if it has 3-4 vertices
+    (ETABS reads 3DFACE as area elements).
+    """
+    msp = doc.modelspace()
+    lwpolys = [e for e in msp if e.dxftype() == "LWPOLYLINE"]
+    count = 0
+
+    for lw in lwpolys:
+        layer = lw.dxf.layer
+        pts = list(lw.get_points(format="xy"))
+        z = lw.dxf.elevation if lw.dxf.hasattr("elevation") else 0
+        closed = lw.is_closed
+
+        if len(pts) < 2:
+            msp.delete_entity(lw)
+            count += 1
+            continue
+
+        # Create LINE segments for each edge
+        for i in range(len(pts) - 1):
+            msp.add_line(
+                (pts[i][0], pts[i][1], z),
+                (pts[i + 1][0], pts[i + 1][1], z),
+                dxfattribs={"layer": layer},
+            )
+
+        # Close the polygon with a final segment
+        if closed and len(pts) >= 3:
+            msp.add_line(
+                (pts[-1][0], pts[-1][1], z),
+                (pts[0][0], pts[0][1], z),
+                dxfattribs={"layer": layer},
+            )
+
+            # For 3-4 vertex closed shapes, also create a 3DFACE
+            # (ETABS reads 3DFACE as floor/wall area elements)
+            if len(pts) <= 4:
+                face_pts = [(p[0], p[1], z) for p in pts]
+                while len(face_pts) < 4:
+                    face_pts.append(face_pts[-1])  # 3DFACE needs 4 vertices
+                msp.add_3dface(face_pts, dxfattribs={"layer": layer})
+
+        msp.delete_entity(lw)
+        count += 1
+
+    return count
+
+
+def _move_to_origin(doc):
+    """Translate all geometry so the model centroid is near the origin.
+
+    Prevents floating-point precision loss from large absolute coordinates.
+    Returns the offset applied (dx, dy) so the user knows the shift.
+    """
+    msp = doc.modelspace()
+    entities = list(msp)
+
+    # Compute centroid of all geometry
+    all_pts = []
+    for ent in entities:
+        all_pts.extend(entity_endpoints(ent))
+    if not all_pts:
+        return (0, 0)
+
+    cx = (min(p[0] for p in all_pts) + max(p[0] for p in all_pts)) / 2
+    cy = (min(p[1] for p in all_pts) + max(p[1] for p in all_pts)) / 2
+
+    # Only shift if far from origin
+    max_coord = max(abs(cx), abs(cy))
+    x_range = max(p[0] for p in all_pts) - min(p[0] for p in all_pts)
+    y_range = max(p[1] for p in all_pts) - min(p[1] for p in all_pts)
+    model_dim = max(x_range, y_range, 1.0)
+
+    if max_coord / model_dim < 5000:
+        return (0, 0)
+
+    # Shift everything
+    dx, dy = -cx, -cy
+    for ent in entities:
+        _shift_entity_y(ent, dy)
+        _shift_entity_x(ent, dx)
+
+    return (round(dx, 2), round(dy, 2))
+
+
+def _shift_entity_x(entity, dx):
+    """Shift an entity's X coordinates by dx."""
+    dxftype = entity.dxftype()
+    if dxftype == "LINE":
+        s = entity.dxf.start
+        e = entity.dxf.end
+        entity.dxf.start = (s.x + dx, s.y, s.z)
+        entity.dxf.end = (e.x + dx, e.y, e.z)
+    elif dxftype == "LWPOLYLINE":
+        pts = list(entity.get_points(format="xyseb"))
+        shifted = [(p[0] + dx, *p[1:]) for p in pts]
+        entity.set_points(shifted, format="xyseb")
+    elif dxftype == "POLYLINE":
+        for v in entity.vertices:
+            loc = v.dxf.location
+            v.dxf.location = (loc.x + dx, loc.y, loc.z)
+    elif dxftype in ("CIRCLE", "ARC"):
+        c = entity.dxf.center
+        entity.dxf.center = (c.x + dx, c.y, c.z)
+    elif dxftype == "INSERT":
+        p = entity.dxf.insert
+        entity.dxf.insert = (p.x + dx, p.y, p.z)
+    elif dxftype in ("TEXT", "MTEXT"):
+        if entity.dxf.hasattr("insert"):
+            p = entity.dxf.insert
+            entity.dxf.insert = (p.x + dx, p.y, p.z)
+    elif dxftype == "POINT":
+        p = entity.dxf.location
+        entity.dxf.location = (p.x + dx, p.y, p.z)
+    elif dxftype == "3DFACE":
+        for attr in ("vtx0", "vtx1", "vtx2", "vtx3"):
+            if entity.dxf.hasattr(attr):
+                v = getattr(entity.dxf, attr)
+                setattr(entity.dxf, attr, (v.x + dx, v.y, v.z))
+
+
 def cmd_clean(args):
-    """Apply geometry fixes and write a new DXF."""
+    """Apply geometry fixes and write an ETABS-ready DXF.
+
+    Fix order matters:
+    1. Explode blocks (creates new entities for subsequent passes)
+    2. Convert LWPOLYLINE → LINE + 3DFACE (ETABS ignores LWPOLYLINE)
+    3. Flatten Z coordinates
+    4. Move to origin (if far from 0,0)
+    5. Remove duplicates (after all conversions, more dupes may emerge)
+    6. Close near-closed polylines
+    """
     doc = load_dxf(args.input)
     do_all = args.all
 
     results = {}
 
-    # Order: explode first, then flatten, then dedup, then close
     if do_all or args.explode_blocks:
         results["blocks_exploded"] = _explode_blocks(doc)
 
+    if do_all or args.convert_lwpoly:
+        results["lwpolylines_converted"] = _convert_lwpolylines(doc)
+
     if do_all or args.flatten_z:
         results["z_flattened"] = _flatten_z(doc)
+
+    if do_all or args.move_origin:
+        offset = _move_to_origin(doc)
+        if offset != (0, 0):
+            results["origin_shifted"] = {"dx": offset[0], "dy": offset[1]}
 
     if do_all or args.remove_dupes:
         results["duplicates_removed"] = _remove_duplicates(doc, args.tolerance)
@@ -791,6 +1055,7 @@ def cmd_clean(args):
     if do_all or args.close_polylines:
         results["polylines_closed"] = _close_polylines(doc, args.tolerance)
 
+    # Save as R2000 format for max ETABS compatibility
     doc.saveas(args.output)
 
     if args.json:
@@ -1839,13 +2104,20 @@ def main():
                        help="Comma-separated layer filter")
 
     # -- clean --
-    p_clean = sub.add_parser("clean", help="Apply fixes and write a new DXF")
+    p_clean = sub.add_parser("clean",
+                             help="Apply fixes and write an ETABS-ready DXF")
     p_clean.add_argument("input", help="Input DXF file")
     p_clean.add_argument("output", help="Output DXF file")
     p_clean.add_argument("-t", "--tolerance", type=float, default=0.25)
     p_clean.add_argument("--flatten-z", action="store_true")
     p_clean.add_argument("--remove-dupes", action="store_true")
     p_clean.add_argument("--explode-blocks", action="store_true")
+    p_clean.add_argument("--convert-lwpoly", action="store_true",
+                         help="Convert LWPOLYLINE to LINE + 3DFACE "
+                              "(ETABS ignores LWPOLYLINE)")
+    p_clean.add_argument("--move-origin", action="store_true",
+                         help="Shift geometry to origin if far away "
+                              "(prevents float precision loss)")
     p_clean.add_argument("--close-polylines", action="store_true")
     p_clean.add_argument("--all", action="store_true",
                          help="Apply all fixes")
