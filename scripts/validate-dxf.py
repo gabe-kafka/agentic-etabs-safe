@@ -1479,6 +1479,310 @@ def _shift_entity_y(entity, dy):
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: align
+# ---------------------------------------------------------------------------
+
+def _extract_column_centroids_for_block(doc, block_name, insert_point):
+    """Get global (x, y) centroids for all column polylines in a block,
+    given the block's insertion point."""
+    if block_name not in doc.blocks:
+        return []
+    block = doc.blocks[block_name]
+    centroids = []
+    ix, iy = insert_point[0], insert_point[1]
+    for ent in block:
+        if ent.dxftype() != "LWPOLYLINE":
+            continue
+        if not ent.is_closed:
+            continue
+        pts = list(ent.get_points(format="xy"))
+        if len(pts) < 3:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cx = (min(xs) + max(xs)) / 2 + ix
+        cy = (min(ys) + max(ys)) / 2 + iy
+        w = max(xs) - min(xs)
+        h = max(ys) - min(ys)
+        centroids.append({
+            "x": round(cx, 2),
+            "y": round(cy, 2),
+            "size": f"{round(w)}x{round(h)}",
+        })
+    return centroids
+
+
+def _extract_direct_column_centroids(entities):
+    """Get centroids from non-block column geometry (direct LWPOLYLINE on column layers)."""
+    centroids = []
+    for ent in entities:
+        if ent.dxftype() != "LWPOLYLINE":
+            continue
+        if not ent.is_closed:
+            continue
+        layer_lower = ent.dxf.layer.lower()
+        if "col" not in layer_lower:
+            continue
+        pts = list(ent.get_points(format="xy"))
+        if len(pts) < 3:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cx = (min(xs) + max(xs)) / 2
+        cy = (min(ys) + max(ys)) / 2
+        w = max(xs) - min(xs)
+        h = max(ys) - min(ys)
+        centroids.append({
+            "x": round(cx, 2),
+            "y": round(cy, 2),
+            "size": f"{round(w)}x{round(h)}",
+        })
+    return centroids
+
+
+def _normalize_columns_to_plan(columns, floor_y_min):
+    """Shift column Y coords so floor band starts at Y=0 (plan-relative)."""
+    return [
+        {"x": c["x"], "y": round(c["y"] - floor_y_min, 2), "size": c["size"]}
+        for c in columns
+    ]
+
+
+def _match_columns(cols_a, cols_b, tolerance):
+    """Find matched, dropped, and added columns between two floors.
+
+    Returns (matched, dropped, added) where:
+    - matched: list of (col_a, col_b) pairs within tolerance
+    - dropped: cols in A with no match in B (column removed going up)
+    - added: cols in B with no match in A (new column appearing)
+    """
+    used_b = set()
+    matched = []
+    dropped = []
+
+    for ca in cols_a:
+        best_idx = None
+        best_dist = float("inf")
+        for j, cb in enumerate(cols_b):
+            if j in used_b:
+                continue
+            d = math.dist((ca["x"], ca["y"]), (cb["x"], cb["y"]))
+            if d < best_dist:
+                best_dist = d
+                best_idx = j
+        if best_idx is not None and best_dist <= tolerance:
+            matched.append((ca, cols_b[best_idx]))
+            used_b.add(best_idx)
+        else:
+            dropped.append(ca)
+
+    added = [cols_b[j] for j in range(len(cols_b)) if j not in used_b]
+    return matched, dropped, added
+
+
+def _draw_revision_cloud(msp, cx, cy, radius, layer="ALIGN-CLOUD"):
+    """Draw a revision cloud (bumpy circle) around a point."""
+    n_bumps = 12
+    bump_r = radius * 0.35
+    pts = []
+    for i in range(n_bumps * 2):
+        angle = 2 * math.pi * i / (n_bumps * 2)
+        if i % 2 == 0:
+            r = radius
+        else:
+            r = radius + bump_r
+        x = cx + r * math.cos(angle)
+        y = cy + r * math.sin(angle)
+        pts.append((x, y))
+    msp.add_lwpolyline(pts, close=True, dxfattribs={
+        "layer": layer,
+        "color": 1,  # red
+    })
+
+
+def cmd_align(args):
+    """Check column vertical alignment across floors.
+
+    Finds columns that appear on one floor but not the adjacent floor —
+    these are transfer conditions that need beams. Outputs a DXF with
+    revision clouds marking discontinuities.
+    """
+    filepath = args.path
+    doc = load_dxf(filepath)
+    msp_ents = list(doc.modelspace())
+
+    # Detect floors
+    labels = _detect_floor_labels(msp_ents)
+    if len(labels) < 2:
+        raise SystemExit("Need at least 2 floor labels for alignment check.")
+
+    # Build floor bands (just for Y-band boundaries)
+    band_results = _labels_to_bands(labels, msp_ents)
+    bands = [(label, y_min, y_max) for (label, y_min, y_max), _ in band_results]
+
+    tolerance = args.tolerance
+
+    # Collect ALL column positions globally from every INSERT in the file,
+    # then assign each individual column to a floor band by its actual Y.
+    all_global_columns = []  # (global_x, global_y, size_str)
+
+    for ent in msp_ents:
+        if ent.dxftype() == "INSERT":
+            layer_lower = ent.dxf.layer.lower()
+            block_lower = ent.dxf.name.lower()
+            is_col = "col" in layer_lower or "col" in block_lower
+            if is_col:
+                p = ent.dxf.insert
+                cols = _extract_column_centroids_for_block(
+                    doc, ent.dxf.name, (p.x, p.y))
+                all_global_columns.extend(cols)
+
+    # Also pick up direct (non-block) column polylines
+    direct = _extract_direct_column_centroids(msp_ents)
+    all_global_columns.extend(direct)
+
+    # Assign each column to a floor band by its global Y
+    floor_columns = []  # (label, y_min, y_max, [columns])
+    for label, y_min, y_max in bands:
+        cols_in_band = []
+        for col in all_global_columns:
+            if y_min <= col["y"] <= y_max:
+                cols_in_band.append(col)
+        # Normalize Y to plan-relative (subtract y_min)
+        cols_in_band = _normalize_columns_to_plan(cols_in_band, y_min)
+        floor_columns.append((label, y_min, y_max, cols_in_band))
+
+    # Compare adjacent floors
+    discontinuities = []
+    for i in range(len(floor_columns) - 1):
+        below_label, below_ymin, below_ymax, below_cols = floor_columns[i]
+        above_label, above_ymin, above_ymax, above_cols = floor_columns[i + 1]
+
+        if not below_cols and not above_cols:
+            continue
+
+        matched, dropped, added = _match_columns(below_cols, above_cols, tolerance)
+
+        if dropped or added:
+            discontinuities.append({
+                "below": below_label,
+                "above": above_label,
+                "below_count": len(below_cols),
+                "above_count": len(above_cols),
+                "matched": len(matched),
+                "dropped": [{"x": c["x"], "y": c["y"], "size": c["size"]}
+                            for c in dropped],
+                "added": [{"x": c["x"], "y": c["y"], "size": c["size"]}
+                          for c in added],
+            })
+
+    # Generate output DXF with clouds
+    if args.output:
+        out_doc = ezdxf.readfile(filepath)  # fresh copy
+        out_msp = out_doc.modelspace()
+
+        # Add cloud layer
+        if "ALIGN-CLOUD" not in out_doc.layers:
+            out_doc.layers.add("ALIGN-CLOUD", color=1)
+        if "ALIGN-LABEL" not in out_doc.layers:
+            out_doc.layers.add("ALIGN-LABEL", color=1)
+
+        cloud_radius = tolerance * 3
+
+        for disc in discontinuities:
+            # Find the floor band Y offset for the "below" floor
+            below_ymin = None
+            for label, ymin, ymax, _ in floor_columns:
+                if label == disc["below"]:
+                    below_ymin = ymin
+                    break
+
+            above_ymin = None
+            for label, ymin, ymax, _ in floor_columns:
+                if label == disc["above"]:
+                    above_ymin = ymin
+                    break
+
+            # Cloud dropped columns on the lower floor
+            for col in disc["dropped"]:
+                gx = col["x"]
+                gy = col["y"] + (below_ymin or 0)
+                _draw_revision_cloud(out_msp, gx, gy, cloud_radius,
+                                     layer="ALIGN-CLOUD")
+                out_msp.add_text(
+                    f"DROP @ {disc['above']}",
+                    dxfattribs={
+                        "layer": "ALIGN-LABEL",
+                        "height": cloud_radius * 0.6,
+                        "color": 1,
+                        "insert": (gx + cloud_radius * 1.2,
+                                   gy + cloud_radius * 0.5),
+                    },
+                )
+
+            # Cloud added columns on the upper floor
+            for col in disc["added"]:
+                gx = col["x"]
+                gy = col["y"] + (above_ymin or 0)
+                _draw_revision_cloud(out_msp, gx, gy, cloud_radius,
+                                     layer="ALIGN-CLOUD")
+                out_msp.add_text(
+                    f"NEW @ {disc['above']}",
+                    dxfattribs={
+                        "layer": "ALIGN-LABEL",
+                        "height": cloud_radius * 0.6,
+                        "color": 1,
+                        "insert": (gx + cloud_radius * 1.2,
+                                   gy + cloud_radius * 0.5),
+                    },
+                )
+
+        out_doc.saveas(args.output)
+
+    # Report
+    result = {
+        "file": str(filepath),
+        "floor_count": len(floor_columns),
+        "floors": [
+            {"floor": label, "column_count": len(cols)}
+            for label, _, _, cols in floor_columns
+        ],
+        "discontinuities": discontinuities,
+        "output": args.output,
+    }
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"align: {filepath}")
+        print()
+        print("  COLUMNS PER FLOOR")
+        for label, _, _, cols in floor_columns:
+            print(f"    {label:20s}  {len(cols):3d} columns")
+        print()
+        if discontinuities:
+            print(f"  DISCONTINUITIES ({len(discontinuities)} transitions)")
+            for d in discontinuities:
+                n_drop = len(d["dropped"])
+                n_add = len(d["added"])
+                print(f"    {d['below']:10s} → {d['above']:10s}  "
+                      f"{d['matched']} aligned, "
+                      f"{n_drop} dropped, {n_add} added")
+                for col in d["dropped"]:
+                    print(f"      DROP  ({col['x']:.0f}, {col['y']:.0f})  "
+                          f"{col['size']}")
+                for col in d["added"]:
+                    print(f"      NEW   ({col['x']:.0f}, {col['y']:.0f})  "
+                          f"{col['size']}")
+        else:
+            print("  All columns align across all floors.")
+        if args.output:
+            print(f"\n  Clouded DXF: {args.output}")
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
 
@@ -1562,6 +1866,17 @@ def main():
     p_split.add_argument("output_dir", help="Output directory")
     p_split.add_argument("--json", action="store_true")
 
+    # -- align --
+    p_align = sub.add_parser("align",
+                             help="Check column vertical alignment across floors")
+    p_align.add_argument("path", help="DXF file")
+    p_align.add_argument("-o", "--output", default=None,
+                         help="Output DXF with revision clouds on discontinuities")
+    p_align.add_argument("-t", "--tolerance", type=float, default=24.0,
+                         help="Match tolerance in drawing units (default 24 — "
+                              "half a typical column width)")
+    p_align.add_argument("--json", action="store_true")
+
     args = parser.parse_args()
     commands = {
         "inspect": cmd_inspect,
@@ -1570,6 +1885,7 @@ def main():
         "floors": cmd_floors,
         "classify": cmd_classify,
         "split": cmd_split,
+        "align": cmd_align,
     }
     sys.exit(commands[args.command](args))
 
