@@ -9,13 +9,13 @@ All in `scripts/`. Run with `python3 scripts/<name>.py` or `powershell scripts/<
 ### DXF Preprocessing (pre-import)
 | Command | Purpose |
 |---|---|
-| `validate-dxf.py inspect` | Full DXF survey — layers, blocks, text, extents |
-| `validate-dxf.py validate` | 8 geometry checks (dupes, stray Z, open polylines, etc.) |
-| `validate-dxf.py classify` | Propose layer/block → ETABS element mappings |
-| `validate-dxf.py floors` | Detect floor plans via text labels or spatial clustering |
-| `validate-dxf.py align` | Column vertical alignment check across floors, cloud discontinuities |
-| `validate-dxf.py clean` | Fix geometry (explode blocks, flatten Z, remove dupes) |
-| `validate-dxf.py split` | Export per-floor DXF files |
+| `dxf-to-etabs.py inspect` | Full DXF survey — layers, blocks, text, extents |
+| `dxf-to-etabs.py validate` | 8 geometry checks (dupes, stray Z, open polylines, etc.) |
+| `dxf-to-etabs.py classify` | Propose layer/block → ETABS element mappings |
+| `dxf-to-etabs.py floors` | Detect floor plans via text labels or spatial clustering |
+| `dxf-to-etabs.py align` | Column vertical alignment check across floors, cloud discontinuities |
+| `dxf-to-etabs.py clean` | Fix geometry (explode blocks, flatten Z, remove dupes) |
+| `dxf-to-etabs.py split` | Export per-floor DXF files |
 
 ### ETABS (post-import, live model)
 | Script | Purpose |
@@ -35,10 +35,10 @@ Two phases. DXF debug happens here, then ETABS debug happens in ETABS.
 When the user provides a DXF, run discover automatically:
 
 ```
-python3 scripts/validate-dxf.py inspect <file.dxf> --json
-python3 scripts/validate-dxf.py validate <file.dxf> --json
-python3 scripts/validate-dxf.py floors <file.dxf> --json
-python3 scripts/validate-dxf.py classify <file.dxf> --json
+python3 scripts/dxf-to-etabs.py inspect <file.dxf> --json
+python3 scripts/dxf-to-etabs.py validate <file.dxf> --json
+python3 scripts/dxf-to-etabs.py floors <file.dxf> --json
+python3 scripts/dxf-to-etabs.py classify <file.dxf> --json
 ```
 
 Then present findings and **ask the user**:
@@ -50,8 +50,8 @@ Then present findings and **ask the user**:
 
 After user confirms, run clean:
 ```
-python3 scripts/validate-dxf.py clean <input.dxf> <output.dxf> --explode-blocks --remove-dupes --flatten-z
-python3 scripts/validate-dxf.py validate <output.dxf> --json
+python3 scripts/dxf-to-etabs.py clean <input.dxf> <output.dxf> --explode-blocks --remove-dupes --flatten-z
+python3 scripts/dxf-to-etabs.py validate <output.dxf> --json
 ```
 
 Deliver the cleaned DXF with a summary:

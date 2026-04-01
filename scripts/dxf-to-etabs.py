@@ -1,19 +1,28 @@
-"""DXF preprocessor for ETABS import.
+"""DXF-to-ETABS import debugger.
 
-Validates, cleans, and identifies floors in 2D DXF files before importing
-into ETABS.  Catches the geometry problems that silently corrupt models:
-duplicate entities, stray Z-coordinates, open polylines, unexploded blocks,
-near-miss endpoints, and more.
+Catches what ETABS will choke on or silently corrupt before you import.
+Every check maps to a specific ETABS import behavior:
+
+  - Duplicate entities    → doubled stiffness (ETABS imports both)
+  - Stray Z coordinates   → joint merge failures, wrong elevations
+  - Open polylines        → ETABS reads as lines, not area elements
+  - Unexploded blocks     → ETABS skips INSERT entities entirely
+  - Layer 0 / Defpoints   → ETABS silently drops these on import
+  - Near-miss endpoints   → disconnected joints, load path breaks
+  - Zero-length lines     → meshing failures, division by zero
+  - Fragmented curves     → dozens of tiny beam elements per curve
 
 Usage
 -----
-    python validate-dxf.py validate arch-plan.dxf [--tolerance 0.25] [--json]
-    python validate-dxf.py clean arch-plan.dxf cleaned.dxf [--all]
-    python validate-dxf.py floors combined.dxf [--gap-threshold 50] [--json]
+    python dxf-to-etabs.py inspect  plan.dxf
+    python dxf-to-etabs.py validate plan.dxf
+    python dxf-to-etabs.py classify plan.dxf
+    python dxf-to-etabs.py floors   plan.dxf
+    python dxf-to-etabs.py align    plan.dxf -o clouded.dxf
+    python dxf-to-etabs.py clean    plan.dxf clean.dxf --all
+    python dxf-to-etabs.py split    plan.dxf output_dir/
 
-Dependencies
-------------
-    pip install ezdxf
+Dependencies: pip install ezdxf
 """
 
 import argparse
@@ -470,7 +479,7 @@ def format_report_text(report):
     """Human-readable summary."""
     lines = []
     s = report["summary"]
-    lines.append(f"validate-dxf: {report['file']}")
+    lines.append(f"dxf-to-etabs: {report['file']}")
     lines.append(f"  {s['total_entities']:,} entities  "
                  f"tolerance={report['tolerance']}")
     lines.append("")
@@ -1808,8 +1817,8 @@ def _resolve_dxf_paths(path_arg):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="validate-dxf",
-        description="DXF preprocessor for ETABS import",
+        prog="dxf-to-etabs",
+        description="DXF-to-ETABS import debugger",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

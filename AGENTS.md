@@ -8,7 +8,7 @@ The useful components are:
 - `scripts/copy-load-combinations.ps1`
 - `scripts/compute-shell-smax.ps1`
 - `scripts/export-wall-fr-workbook.py`
-- `scripts/validate-dxf.py` — DXF preprocessor for ETABS import (inspect, validate, classify, clean, floors, split)
+- `scripts/dxf-to-etabs.py` — DXF preprocessor for ETABS import (inspect, validate, classify, clean, floors, split)
 - `typical-sizes.md` for modeling context only
 
 Do not treat this workspace as a model-builder framework or workflow-capture repo.
