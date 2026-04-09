@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ETABS Control Center</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="status-bar">
+    <div class="status-left">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">CONNECTING TO ETABS</span>
+    </div>
+    <div class="status-right">
+      <span>STYLE: COCKPIT-FLAT</span>
+      <span id="clockText">--:--:--</span>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <section class="kpi-strip">
+      <div class="kpi-cell kpi-cell-wide">
+        <span class="kpi-label">MODEL</span>
+        <span class="kpi-value kpi-value-wrap" id="modelTitle">WAITING FOR LIVE SESSION</span>
+      </div>
+      <div class="kpi-cell">
+        <span class="kpi-label">BASE ELEV FT</span>
+        <span class="kpi-value" id="currentBaseElevation">-</span>
+      </div>
+      <div class="kpi-cell">
+        <span class="kpi-label">STORIES</span>
+        <span class="kpi-value" id="currentStoryCount">-</span>
+      </div>
+      <div class="kpi-cell">
+        <span class="kpi-label">PHYSICAL</span>
+        <span class="kpi-value" id="physicalCounts">-</span>
+      </div>
+      <div class="kpi-cell">
+        <span class="kpi-label">DISPLAY UNITS</span>
+        <span class="kpi-value" id="presentUnits">-</span>
+      </div>
+    </section>
+
+    <main class="grid-shell">
+      <section class="panel editor-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-label">CURRENT STORIES</div>
+            <h1>EDIT LIVE STORY SET</h1>
+          </div>
+          <div class="panel-actions">
+            <button class="button button-ghost" id="refreshButton" type="button">REFRESH LIVE</button>
+            <button class="button button-ghost" id="resetButton" type="button">RESET EDITS</button>
+            <button class="button button-ghost" id="copyCurrentButton" type="button">COPY EDITOR</button>
+          </div>
+        </div>
+
+        <div class="editor-meta">
+          <label class="toggle">
+            <input id="saveToggle" type="checkbox" checked>
+            <span>SAVE MODEL</span>
+          </label>
+          <label class="toggle">
+            <input id="unlockToggle" type="checkbox" checked>
+            <span>UNLOCK IF LOCKED</span>
+          </label>
+          <button class="button button-update" id="applyButton" type="button" disabled>UPDATE ETABS MODEL</button>
+        </div>
+
+        <div class="editor-frame">
+          <div class="editor-toolbar">
+            <span>PASTE ETABS / EXCEL VALUES HERE</span>
+            <span>BASE ELEVATION LIVES IN THE FIRST ROW. ENTER ADDS ROWS. TAB DELIMITS COLUMNS.</span>
+          </div>
+          <textarea id="storyEditor" spellcheck="false" placeholder="Base Elevation Ft&#9;0&#10;Story&#9;Elevation Ft&#10;Cellar&#9;14.625&#10;Story1&#9;24.625&#10;Roof&#9;134.625"></textarea>
+        </div>
+
+        <div class="info-row">
+          <span>EDIT THE LIVE STORY LIST AND BASE ELEVATION DIRECTLY IN THIS SURFACE.</span>
+          <span>PASTE COPIED ETABS TABLES OR EXCEL RANGES.</span>
+          <span>UPDATE BUTTON ARMS ONLY WHEN THE PARSED SET DIFFERS FROM LIVE.</span>
+        </div>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-label">PARSED RESULT</div>
+            <h2>VALIDATED STORY SET</h2>
+          </div>
+          <div class="inline-meta">
+            <span class="badge" id="previewBadge">NO CHANGES</span>
+          </div>
+        </div>
+        <div class="summary-line" id="previewSummary">LIVE STORY SET LOADED. EDIT THE CURRENT STORIES PANEL TO ARM THE UPDATE BUTTON.</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>STORY</th>
+                <th class="num">ELEV FT</th>
+                <th class="num">HEIGHT FT</th>
+              </tr>
+            </thead>
+            <tbody id="previewTableBody">
+              <tr>
+                <td colspan="4" class="empty-cell">NO PARSED STORY DATA YET.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-label">RUN LOG</div>
+            <h2>ACTIVITY</h2>
+          </div>
+        </div>
+        <div class="log-output" id="logOutput"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
