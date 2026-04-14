@@ -1,0 +1,88 @@
+<mxfile host="app.diagrams.net" modified="2026-04-14T00:00:00.000Z" agent="claude-code" version="24.0.0">
+  <diagram name="agentic-etabs-safe" id="aes1">
+    <mxGraphModel adaptiveColors="auto" dx="1280" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1280" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="AGENTIC ETABS/SAFE  ::  SCRIPT-FIRST CSI TOOLING  ::  CLAUDE AS OPERATOR" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontFamily=monospace;fontSize=14;fontColor=#E5E5E5;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="20" y="15" width="1240" height="26" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="/Users/gabe/agentic-etabs-safe  ·  live-model debug + extraction  ·  direct CSI API, no wrappers  ·  Claude attaches to the running instance and drives diagnostics" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontFamily=monospace;fontSize=10;fontColor=#808080" vertex="1" parent="1">
+          <mxGeometry x="20" y="40" width="1240" height="18" as="geometry"/>
+        </mxCell>
+        <mxCell id="phdr" value="LIVE MODEL DEBUG + EXTRACTION  //  POWERSHELL + PYTHON" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#0A0A0A;strokeColor=#3B82F6;strokeWidth=1;fontColor=#3B82F6;fontFamily=monospace;fontSize=11;fontStyle=1;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="65" width="1240" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_live" value="&lt;b&gt;LIVE MODEL&lt;/b&gt;&lt;br&gt;&lt;br&gt;ETABS or SAFE running instance" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#3B82F6;strokeWidth=2;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="540" y="105" width="200" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_connect" value="&lt;b&gt;connect-etabs-model.ps1&lt;/b&gt;&lt;br&gt;resolve ETABSv1.dll  /  SAFE API DLL  ·  attach SapModel&lt;br&gt;direct CSI API — no wrapper libs" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#06B6D4;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="470" y="185" width="340" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_lbl" value="&lt;b&gt;DIAGNOSTICS + EXTRACTION&lt;/b&gt;  ·  CSI DB tables and direct result calls  ·  no UI scraping  ·  all outputs structured (CSV / XLSX / JSON)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontFamily=monospace;fontSize=10;fontColor=#06B6D4;" vertex="1" parent="1">
+          <mxGeometry x="30" y="265" width="1220" height="22" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_diag" value="&lt;b&gt;diagnose-etabs-&lt;br&gt;instability.ps1&lt;/b&gt;&lt;br&gt;&lt;br&gt;· disconnected joints&lt;br&gt;· weak connectivity&lt;br&gt;· bad releases / end conditions" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#06B6D4;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="30" y="300" width="300" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_smax" value="&lt;b&gt;compute-shell-&lt;br&gt;smax.ps1&lt;/b&gt;&lt;br&gt;&lt;br&gt;principal shell stress extraction&lt;br&gt;wall / slab S-max&lt;br&gt;vs cracking threshold" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#06B6D4;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="340" y="300" width="300" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_combos" value="&lt;b&gt;copy-load-&lt;br&gt;combinations.ps1&lt;/b&gt;&lt;br&gt;&lt;br&gt;copy load combos between&lt;br&gt;source and target models&lt;br&gt;preserves factors and types" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#06B6D4;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="650" y="300" width="300" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_wallfr" value="&lt;b&gt;export-wall-fr-&lt;br&gt;workbook.py&lt;/b&gt;&lt;br&gt;&lt;br&gt;wall stress CSV -&amp;gt; XLSX&lt;br&gt;engineer-facing report&lt;br&gt;per-story wall panels" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#06B6D4;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="960" y="300" width="290" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_out" value="&lt;b&gt;OUTPUTS&lt;/b&gt;&amp;nbsp;&amp;nbsp;[GREEN]&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;CSV / XLSX reports in user-visible location&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;stability findings&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;stress extracts&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;combo deltas" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#16A34A;strokeWidth=2;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="30" y="470" width="1220" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_safe_note" value="&lt;b&gt;SAFE&lt;/b&gt;&amp;nbsp;&amp;nbsp;same script-first approach  ·  separate SAFE-specific scripts in scripts/  ·  SAFE API DLL resolved from running install  ·  attach live SAFE model, query tables/results directly  ·  keep SAFE + ETABS entry points separate unless shared logic is truly identical" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#606060;strokeWidth=1;fontColor=#808080;fontFamily=monospace;fontSize=10;align=left;verticalAlign=middle;spacingLeft=12;" vertex="1" parent="1">
+          <mxGeometry x="30" y="545" width="1220" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="n_future" value="&lt;b&gt;FUTURE TASKS&lt;/b&gt;&amp;nbsp;&amp;nbsp;new ETABS-only task -&amp;gt; new ETABS script  ·  new SAFE-only task -&amp;gt; new SAFE script  ·  reports -&amp;gt; output file in user-visible location  ·  no new wrapper libs or frameworks" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#606060;strokeWidth=1;fontColor=#808080;fontFamily=monospace;fontSize=10;align=left;verticalAlign=middle;spacingLeft=12;" vertex="1" parent="1">
+          <mxGeometry x="30" y="591" width="1220" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="auth_hdr" value="DECISION AUTHORITY  //  AUTONOMY SPLIT" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#0A0A0A;strokeColor=#3B82F6;strokeWidth=1;fontColor=#3B82F6;fontFamily=monospace;fontSize=11;fontStyle=1;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="650" width="1240" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="auth_auto" value="&lt;b&gt;CLAUDE AUTONOMOUS&lt;/b&gt;&amp;nbsp;&amp;nbsp;[cyan]&lt;br&gt;&lt;br&gt;&amp;nbsp;&amp;nbsp;· attach to running ETABS / SAFE instance&lt;br&gt;&amp;nbsp;&amp;nbsp;· run diagnostics and extraction against the live SapModel&lt;br&gt;&amp;nbsp;&amp;nbsp;· interpret diagnostic output and flag anomalies&lt;br&gt;&amp;nbsp;&amp;nbsp;· draft CSV / XLSX reports to a user-visible location&lt;br&gt;&amp;nbsp;&amp;nbsp;· re-run checks after the user makes a model change" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#06B6D4;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="20" y="680" width="615" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="auth_user" value="&lt;b&gt;USER DECISION REQUIRED&lt;/b&gt;&amp;nbsp;&amp;nbsp;[amber]&lt;br&gt;&lt;br&gt;&amp;nbsp;&amp;nbsp;· which load combinations or stories to check&lt;br&gt;&amp;nbsp;&amp;nbsp;· thresholds for cracking / utilization when not obvious&lt;br&gt;&amp;nbsp;&amp;nbsp;· any ambiguity in structural intent&lt;br&gt;&amp;nbsp;&amp;nbsp;· explicit approval before Claude proposes a model edit" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#D97706;strokeWidth=1;fontColor=#E5E5E5;fontFamily=monospace;fontSize=10;align=left;verticalAlign=top;spacingLeft=12;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="645" y="680" width="615" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="legend" value="&lt;b&gt;LEGEND&lt;/b&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;[ACCENT] entry / live model&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;[CYAN] autonomous CSI-API op&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;[AMBER] user gate&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;[GREEN] deliverable / output&amp;nbsp;&amp;nbsp;·&amp;nbsp;&amp;nbsp;[GREY] supporting note" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontFamily=monospace;fontSize=10;fontColor=#808080" vertex="1" parent="1">
+          <mxGeometry x="20" y="865" width="1240" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_live_connect" style="endArrow=classic;html=1;rounded=0;strokeColor=#606060;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_live" target="n_connect">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_conn_diag" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_connect" target="n_diag">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_conn_smax" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_connect" target="n_smax">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_conn_combos" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_connect" target="n_combos">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_conn_wallfr" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_connect" target="n_wallfr">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_diag_out" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_diag" target="n_out">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_smax_out" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_smax" target="n_out">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_combos_out" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_combos" target="n_out">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_wallfr_out" style="endArrow=classic;html=1;rounded=0;strokeColor=#06B6D4;edgeStyle=none;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="n_wallfr" target="n_out">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
