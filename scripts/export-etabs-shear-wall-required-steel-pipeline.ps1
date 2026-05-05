@@ -11,6 +11,8 @@ param(
 
     [string[]]$Story = @(),
 
+    [double]$QaToleranceIn2 = 0.005,
+
     [switch]$OpenOutputDirectory,
 
     [switch]$OpenWorkbook,
@@ -417,6 +419,26 @@ function Get-CellXml {
         [int]$StyleId
     )
 
+    $formulaProperty = if ($null -ne $Value) { $Value.PSObject.Properties["Formula"] } else { $null }
+    if ($null -ne $formulaProperty) {
+        $formulaText = [string]$formulaProperty.Value
+        if ($formulaText.StartsWith("=")) {
+            $formulaText = $formulaText.Substring(1)
+        }
+
+        $cachedProperty = $Value.PSObject.Properties["CachedValue"]
+        $cachedValue = if ($null -ne $cachedProperty) { $cachedProperty.Value } else { $null }
+        if ($null -ne $cachedValue -and $cachedValue -is [ValueType] -and $cachedValue -isnot [bool]) {
+            return '<c r="{0}" s="{1}"><f>{2}</f><v>{3}</v></c>' -f $CellReference, $StyleId, (Escape-Xml -Value $formulaText), (Format-NumberInvariant -Value $cachedValue)
+        }
+
+        if ($null -ne $cachedValue -and -not [string]::IsNullOrWhiteSpace([string]$cachedValue)) {
+            return '<c r="{0}" t="str" s="{1}"><f>{2}</f><v>{3}</v></c>' -f $CellReference, $StyleId, (Escape-Xml -Value $formulaText), (Escape-Xml -Value $cachedValue)
+        }
+
+        return '<c r="{0}" s="{1}"><f>{2}</f></c>' -f $CellReference, $StyleId, (Escape-Xml -Value $formulaText)
+    }
+
     if ($null -ne $Value -and $Value -is [ValueType] -and $Value -isnot [bool]) {
         return '<c r="{0}" s="{1}"><v>{2}</v></c>' -f $CellReference, $StyleId, (Format-NumberInvariant -Value $Value)
     }
@@ -432,6 +454,11 @@ function Get-CellDisplayText {
 
     if ($null -eq $Value) {
         return ""
+    }
+
+    $cachedProperty = $Value.PSObject.Properties["CachedValue"]
+    if ($null -ne $cachedProperty) {
+        return Get-CellDisplayText -Value $cachedProperty.Value
     }
 
     if ($Value -is [double] -or $Value -is [float] -or $Value -is [decimal]) {
@@ -520,6 +547,7 @@ function Get-WorkbookXml {
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>$($sheetXml -join "")</sheets>
+  <calcPr calcId="0" calcMode="auto" fullCalcOnLoad="1" forceFullCalc="1"/>
 </workbook>
 "@
 }
@@ -766,6 +794,409 @@ workbook.save(path)
     }
 }
 
+function Invoke-WorkbookQaQcAlignment {
+    param(
+        [string]$Path,
+        [object[]]$SheetDefinitions,
+        [object[]]$StationRows,
+        [object[]]$EnvelopeRows,
+        [double]$ToleranceIn2,
+        [AllowNull()]
+        [string]$CsvPath
+    )
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    $payloadPath = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("etabs-shear-wall-qaqc-{0}.json" -f [System.IO.Path]::GetRandomFileName())
+    $expectedSheetNames = Get-UniqueSheetNames -SheetDefinitions $SheetDefinitions
+    $payload = [pscustomobject]@{
+        tolerance_in2 = $ToleranceIn2
+        expected_sheets = @($expectedSheetNames)
+        station_rows = @($StationRows | ForEach-Object {
+                [pscustomobject]@{
+                    Pier = $_.Pier
+                    Story = $_.Story
+                    AsLeft_in2 = $_.AsLeft_in2
+                    AsRight_in2 = $_.AsRight_in2
+                }
+            })
+        envelope_rows = @($EnvelopeRows | ForEach-Object {
+                [pscustomobject]@{
+                    Pier = $_.Pier
+                    Story = $_.Story
+                    RequiredSteelLeft_in2 = $_.RequiredSteelLeft_in2
+                    RequiredSteelRight_in2 = $_.RequiredSteelRight_in2
+                }
+            })
+    }
+
+    try {
+        Write-Utf8File -Path $payloadPath -Content ($payload | ConvertTo-Json -Depth 8)
+        $resolvedCsvPath = if ([string]::IsNullOrWhiteSpace($CsvPath)) { "" } else { $CsvPath }
+        $pythonCode = @'
+import csv
+import json
+import math
+import re
+import sys
+from pathlib import Path
+
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+workbook_path = Path(sys.argv[1])
+payload_path = Path(sys.argv[2])
+csv_path = Path(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+
+with payload_path.open("r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+tolerance = float(payload["tolerance_in2"])
+station_rows = payload["station_rows"]
+envelope_rows = payload["envelope_rows"]
+expected_sheets = payload["expected_sheets"]
+
+headers = [
+    "Status",
+    "Severity",
+    "Check",
+    "Story",
+    "Pier",
+    "Side",
+    "ETABS Value",
+    "Workbook Value",
+    "Delta",
+    "Tolerance",
+    "Source",
+    "Notes",
+]
+check_rows = []
+
+
+def as_key(pier, story):
+    return ("" if pier is None else str(pier), "" if story is None else str(story))
+
+
+def canonical_pier(pier):
+    text = "" if pier is None else str(pier)
+    if re.match(r"^W1\s+\d+/3$", text):
+        return "W1"
+    return text
+
+
+def sanitize_sheet_name(name):
+    cleaned = re.sub(r"[\[\]\:\*\?/\\]", "_", str(name or "")).strip()
+    if not cleaned:
+        cleaned = "Sheet"
+    return cleaned[:31]
+
+
+def to_float(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def fmt(value):
+    number = to_float(value)
+    if number is None:
+        return ""
+    return round(number, 6)
+
+
+def value_delta(left, right):
+    left_value = to_float(left)
+    right_value = to_float(right)
+    if left_value is None and right_value is None:
+        return 0.0
+    if left_value is None or right_value is None:
+        return ""
+    return round(right_value - left_value, 6)
+
+
+def values_match(left, right):
+    left_value = to_float(left)
+    right_value = to_float(right)
+    if left_value is None and right_value is None:
+        return True
+    if left_value is None or right_value is None:
+        return False
+    return abs(left_value - right_value) <= tolerance
+
+
+def add_row(status, severity, check, story="", pier="", side="", etabs_value="", workbook_value="", source="", notes=""):
+    check_rows.append(
+        [
+            status,
+            severity,
+            check,
+            story,
+            pier,
+            side,
+            fmt(etabs_value),
+            fmt(workbook_value),
+            value_delta(etabs_value, workbook_value),
+            tolerance,
+            source,
+            notes,
+        ]
+    )
+
+
+def compare_required(check, story, pier, side, etabs_value, workbook_value, source, notes=""):
+    if values_match(etabs_value, workbook_value):
+        add_row("PASS", "Info", check, story, pier, side, etabs_value, workbook_value, source, notes)
+    else:
+        add_row("FAIL", "Error", check, story, pier, side, etabs_value, workbook_value, source, notes)
+
+
+def read_table(worksheet):
+    rows = list(worksheet.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+    table_headers = ["" if value is None else str(value) for value in rows[0]]
+    records = []
+    for raw_row in rows[1:]:
+        record = {}
+        for index, header in enumerate(table_headers):
+            record[header] = raw_row[index] if index < len(raw_row) else None
+        records.append(record)
+    return table_headers, records
+
+
+value_workbook = load_workbook(workbook_path, data_only=True)
+workbook = load_workbook(workbook_path, data_only=False)
+sheet_names = set(workbook.sheetnames)
+
+for sheet_name in expected_sheets:
+    if sheet_name in sheet_names:
+        add_row("PASS", "Info", "Required sheet present", "", "", "", "", "", "Workbook structure", sheet_name)
+    else:
+        add_row("FAIL", "Error", "Required sheet present", "", "", "", "", "", "Workbook structure", sheet_name)
+
+station_max = {}
+for row in station_rows:
+    key = as_key(row.get("Pier"), row.get("Story"))
+    if key not in station_max:
+        station_max[key] = {"LEFT": None, "RIGHT": None}
+    left = to_float(row.get("AsLeft_in2"))
+    right = to_float(row.get("AsRight_in2"))
+    if left is not None and (station_max[key]["LEFT"] is None or left > station_max[key]["LEFT"]):
+        station_max[key]["LEFT"] = left
+    if right is not None and (station_max[key]["RIGHT"] is None or right > station_max[key]["RIGHT"]):
+        station_max[key]["RIGHT"] = right
+
+for row in envelope_rows:
+    pier = str(row.get("Pier") or "")
+    story = str(row.get("Story") or "")
+    key = as_key(pier, story)
+    station_entry = station_max.get(key)
+    if station_entry is None:
+        add_row("FAIL", "Error", "ETABS station max to envelope", story, pier, "", "", "", "In-memory ETABS pull", "No station rows found for envelope row.")
+        continue
+    compare_required(
+        "ETABS station max to envelope",
+        story,
+        pier,
+        "LEFT",
+        station_entry["LEFT"],
+        row.get("RequiredSteelLeft_in2"),
+        "SapModel.DesignShearWall.GetPierSummaryResults",
+    )
+    compare_required(
+        "ETABS station max to envelope",
+        story,
+        pier,
+        "RIGHT",
+        station_entry["RIGHT"],
+        row.get("RequiredSteelRight_in2"),
+        "SapModel.DesignShearWall.GetPierSummaryResults",
+    )
+
+envelope_by_key = {as_key(row.get("Pier"), row.get("Story")): row for row in envelope_rows}
+
+if "All Piers" in value_workbook.sheetnames:
+    all_headers, all_records = read_table(value_workbook["All Piers"])
+    required_headers = ["Pier", "Story", "RequiredSteelLeft_in2", "RequiredSteelRight_in2"]
+    for header in required_headers:
+        if header in all_headers:
+            add_row("PASS", "Info", "All Piers required column present", "", "", "", "", "", "All Piers", header)
+        else:
+            add_row("FAIL", "Error", "All Piers required column present", "", "", "", "", "", "All Piers", header)
+
+    all_by_key = {}
+    for record in all_records:
+        key = as_key(record.get("Pier"), record.get("Story"))
+        if key in all_by_key:
+            add_row("FAIL", "Error", "All Piers duplicate row", str(record.get("Story") or ""), str(record.get("Pier") or ""), "", "", "", "All Piers", "Duplicate pier/story row.")
+        all_by_key[key] = record
+
+    for row in envelope_rows:
+        pier = str(row.get("Pier") or "")
+        story = str(row.get("Story") or "")
+        record = all_by_key.get(as_key(pier, story))
+        if record is None:
+            add_row("FAIL", "Error", "Envelope to All Piers workbook", story, pier, "", "", "", "All Piers", "Missing pier/story row.")
+            continue
+        compare_required("Envelope to All Piers workbook", story, pier, "LEFT", row.get("RequiredSteelLeft_in2"), record.get("RequiredSteelLeft_in2"), "All Piers")
+        compare_required("Envelope to All Piers workbook", story, pier, "RIGHT", row.get("RequiredSteelRight_in2"), record.get("RequiredSteelRight_in2"), "All Piers")
+
+if "As Master" in value_workbook.sheetnames:
+    rows = list(value_workbook["As Master"].iter_rows(values_only=True))
+    if len(rows) < 3:
+        add_row("FAIL", "Error", "Envelope to As Master workbook", "", "", "", "", "", "As Master", "Sheet does not have the expected header/story rows.")
+    else:
+        canonical_lookup = {}
+        duplicate_keys = set()
+        for row in envelope_rows:
+            key = (canonical_pier(row.get("Pier")), str(row.get("Story") or ""))
+            if key in canonical_lookup:
+                duplicate_keys.add(key)
+                existing = canonical_lookup[key]
+                for source_name, target_name in (
+                    ("RequiredSteelLeft_in2", "RequiredSteelLeft_in2"),
+                    ("RequiredSteelRight_in2", "RequiredSteelRight_in2"),
+                ):
+                    current = to_float(existing.get(target_name))
+                    candidate = to_float(row.get(source_name))
+                    if candidate is not None and (current is None or candidate > current):
+                        existing[target_name] = candidate
+            else:
+                canonical_lookup[key] = {
+                    "RequiredSteelLeft_in2": row.get("RequiredSteelLeft_in2"),
+                    "RequiredSteelRight_in2": row.get("RequiredSteelRight_in2"),
+                }
+
+        for pier, story in sorted(duplicate_keys):
+            add_row("PASS", "Warning", "Canonical schedule pier has multiple source piers", story, pier, "", "", "", "As Master", "Schedule column maps more than one ETABS pier into one output pier label.")
+
+        pier_headers = list(rows[0])
+        side_headers = list(rows[1])
+        for row_index in range(2, len(rows)):
+            story = "" if rows[row_index][0] is None else str(rows[row_index][0])
+            for col_index in range(1, len(pier_headers)):
+                pier = "" if pier_headers[col_index] is None else str(pier_headers[col_index])
+                side = "" if col_index >= len(side_headers) or side_headers[col_index] is None else str(side_headers[col_index]).upper()
+                if not story or not pier or side not in ("LEFT", "RIGHT"):
+                    continue
+                envelope = canonical_lookup.get((pier, story))
+                expected = ""
+                if envelope is not None:
+                    expected = envelope.get("RequiredSteelLeft_in2") if side == "LEFT" else envelope.get("RequiredSteelRight_in2")
+                actual = rows[row_index][col_index] if col_index < len(rows[row_index]) else None
+                compare_required("Envelope to As Master workbook", story, pier, side, expected, actual, "As Master")
+
+for row in envelope_rows:
+    pier = str(row.get("Pier") or "")
+    story = str(row.get("Story") or "")
+    sheet_name = sanitize_sheet_name(pier)
+    if sheet_name not in value_workbook.sheetnames:
+        add_row("FAIL", "Error", "Envelope to pier design workbook", story, pier, "", "", "", sheet_name, "Pier sheet missing.")
+        continue
+    pier_headers, pier_records = read_table(value_workbook[sheet_name])
+    required_headers = ["Story", "AS_REQ_LEFT_in^2", "AS_REQ_RIGHT_in^2"]
+    missing_headers = [header for header in required_headers if header not in pier_headers]
+    if missing_headers:
+        add_row("FAIL", "Error", "Pier sheet required column present", story, pier, "", "", "", sheet_name, ", ".join(missing_headers))
+        continue
+    story_record = None
+    for record in pier_records:
+        if str(record.get("Story") or "") == story:
+            story_record = record
+            break
+    if story_record is None:
+        add_row("FAIL", "Error", "Envelope to pier design workbook", story, pier, "", "", "", sheet_name, "Story row missing.")
+        continue
+    compare_required("Envelope to pier design workbook", story, pier, "LEFT", row.get("RequiredSteelLeft_in2"), story_record.get("AS_REQ_LEFT_in^2"), sheet_name)
+    compare_required("Envelope to pier design workbook", story, pier, "RIGHT", row.get("RequiredSteelRight_in2"), story_record.get("AS_REQ_RIGHT_in^2"), sheet_name)
+
+check_rows.sort(key=lambda item: (0 if item[1] == "Error" else 1 if item[1] == "Warning" else 2, item[2], item[3], item[4], item[5]))
+
+if "QA_QC Alignment" in workbook.sheetnames:
+    qa_ws = workbook["QA_QC Alignment"]
+    qa_ws.delete_rows(1, qa_ws.max_row)
+else:
+    qa_ws = workbook.create_sheet("QA_QC Alignment")
+
+qa_ws.append(headers)
+for cell in qa_ws[1]:
+    cell.font = Font(bold=True)
+    cell.fill = PatternFill(fill_type="solid", fgColor="D9E1F2")
+
+error_fill = PatternFill(fill_type="solid", fgColor="FFC7CE")
+warning_fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
+for row_values in check_rows:
+    qa_ws.append(row_values)
+    row_number = qa_ws.max_row
+    if row_values[1] == "Error":
+        for cell in qa_ws[row_number]:
+            cell.fill = error_fill
+    elif row_values[1] == "Warning":
+        for cell in qa_ws[row_number]:
+            cell.fill = warning_fill
+
+for column_cells in qa_ws.columns:
+    max_length = 0
+    column_index = column_cells[0].column
+    for cell in column_cells:
+        value = cell.value
+        text = "" if value is None else str(value)
+        for line in text.splitlines() or [""]:
+            max_length = max(max_length, len(line))
+    dimension = qa_ws.column_dimensions[get_column_letter(column_index)]
+    dimension.width = min(max(math.ceil((max_length * 1.08) + 2), 8), 120)
+    dimension.bestFit = True
+
+workbook.save(workbook_path)
+
+if csv_path is not None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        writer.writerows(check_rows)
+
+failure_count = sum(1 for row in check_rows if row[1] == "Error")
+warning_count = sum(1 for row in check_rows if row[1] == "Warning")
+summary = {
+    "Status": "PASS" if failure_count == 0 else "FAIL",
+    "CheckedCount": len(check_rows),
+    "FailureCount": failure_count,
+    "WarningCount": warning_count,
+    "ToleranceIn2": tolerance,
+    "Worksheet": "QA_QC Alignment",
+    "CsvPath": str(csv_path) if csv_path is not None else None,
+}
+print(json.dumps(summary, separators=(",", ":")))
+'@
+
+        $pythonOutput = $pythonCode | & python - $resolvedPath $payloadPath $resolvedCsvPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Python failed while applying workbook QA/QC alignment checks."
+        }
+
+        $summaryText = ($pythonOutput -join "`n").Trim()
+        if ([string]::IsNullOrWhiteSpace($summaryText)) {
+            throw "Workbook QA/QC alignment did not return a summary."
+        }
+
+        $summary = $summaryText | ConvertFrom-Json
+        if ($summary.Status -ne "PASS") {
+            throw ("QA/QC alignment failed for '{0}'. Failures: {1}. Review the QA_QC Alignment sheet." -f $resolvedPath, $summary.FailureCount)
+        }
+
+        return $summary
+    }
+    finally {
+        if (Test-Path -LiteralPath $payloadPath) {
+            Remove-Item -LiteralPath $payloadPath -Force
+        }
+    }
+}
+
 function New-SheetRow {
     param(
         [object[]]$Cells,
@@ -776,6 +1207,76 @@ function New-SheetRow {
         Cells = @($Cells)
         Highlight = $Highlight
     }
+}
+
+function New-FormulaCell {
+    param(
+        [string]$Formula,
+        [AllowNull()]
+        [object]$CachedValue
+    )
+
+    return [pscustomobject]@{
+        Formula = $Formula
+        CachedValue = $CachedValue
+    }
+}
+
+function Get-ExcelSheetReferenceName {
+    param(
+        [string]$SheetName
+    )
+
+    return "'{0}'" -f ($SheetName -replace "'", "''")
+}
+
+function Get-ExcelCellReference {
+    param(
+        [int]$ColumnIndex,
+        [int]$RowIndex
+    )
+
+    return "{0}{1}" -f (ConvertTo-ColumnName -Index $ColumnIndex), $RowIndex
+}
+
+function ConvertTo-ExcelStringLiteral {
+    param(
+        [string]$Value
+    )
+
+    return $Value -replace '"', '""'
+}
+
+function New-RequiredSteelFormula {
+    param(
+        [string]$SourceSheet,
+        [string]$ValueColumn,
+        [string]$PierCriteria,
+        [string]$StoryCellReference
+    )
+
+    $criteria = ConvertTo-ExcelStringLiteral -Value $PierCriteria
+    return '=IF(COUNTIFS({0}!$A:$A,"{1}",{0}!$B:$B,{2})=0,"",MAXIFS({0}!${3}:${3},{0}!$A:$A,"{1}",{0}!$B:$B,{2}))' -f $SourceSheet, $criteria, $StoryCellReference, $ValueColumn
+}
+
+function New-DesignValueFormula {
+    param(
+        [string]$RequiredAreaCellReference
+    )
+
+    $areaRange = "$(Get-ExcelSheetReferenceName -SheetName "Master Design Hierarchy")!`$C`$2:`$C`$16"
+    return '=IF({0}="","",IF({0}>=MAX({1}),"EXCEEDS HIERARCHY",IF({0}<MIN({1}),MIN({1}),INDEX({1},MATCH({0},{1},1)+1))))' -f $RequiredAreaCellReference, $areaRange
+}
+
+function New-DesignIdFormula {
+    param(
+        [string]$RequiredAreaCellReference
+    )
+
+    $hierarchySheet = Get-ExcelSheetReferenceName -SheetName "Master Design Hierarchy"
+    $areaRange = "$hierarchySheet!`$C`$2:`$C`$16"
+    $idRange = "$hierarchySheet!`$D`$2:`$D`$16"
+    return '=IF({0}="","",IF({0}>=MAX({1}),"EXCEEDS HIERARCHY",IF({0}<MIN({1}),INDEX({2},1),INDEX({2},MATCH({0},{1},1)+1))))' -f $RequiredAreaCellReference, $areaRange, $idRange
 }
 
 function Convert-ObjectsToSheetRows {
@@ -952,7 +1453,25 @@ function New-EnvelopeLookup {
     $lookup = @{}
     foreach ($row in @($EnvelopeRows)) {
         $canonicalPier = Get-CanonicalPierLabel -PierLabel $row.Pier
-        $lookup["{0}|{1}" -f $canonicalPier, $row.Story] = $row
+        $key = "{0}|{1}" -f $canonicalPier, $row.Story
+        if (-not $lookup.ContainsKey($key)) {
+            $lookup[$key] = [pscustomobject]@{
+                Pier = $canonicalPier
+                Story = $row.Story
+                RequiredSteelLeft_in2 = $row.RequiredSteelLeft_in2
+                RequiredSteelRight_in2 = $row.RequiredSteelRight_in2
+            }
+            continue
+        }
+
+        $entry = $lookup[$key]
+        if ($null -ne $row.RequiredSteelLeft_in2 -and $row.RequiredSteelLeft_in2 -ne "" -and ($null -eq $entry.RequiredSteelLeft_in2 -or $entry.RequiredSteelLeft_in2 -eq "" -or [double]$row.RequiredSteelLeft_in2 -gt [double]$entry.RequiredSteelLeft_in2)) {
+            $entry.RequiredSteelLeft_in2 = $row.RequiredSteelLeft_in2
+        }
+
+        if ($null -ne $row.RequiredSteelRight_in2 -and $row.RequiredSteelRight_in2 -ne "" -and ($null -eq $entry.RequiredSteelRight_in2 -or $entry.RequiredSteelRight_in2 -eq "" -or [double]$row.RequiredSteelRight_in2 -gt [double]$entry.RequiredSteelRight_in2)) {
+            $entry.RequiredSteelRight_in2 = $row.RequiredSteelRight_in2
+        }
     }
 
     return $lookup
@@ -993,13 +1512,40 @@ function Get-DesignCheckValue {
     return [Math]::Round([double]$Value, $Digits)
 }
 
+function New-CountedAggregateFormula {
+    param(
+        [string]$SourceSheet,
+        [string]$ValueColumn,
+        [string]$PierCriteria,
+        [string]$StoryCellReference,
+        [string]$AggregateFunction = "MAXIFS"
+    )
+
+    $criteria = ConvertTo-ExcelStringLiteral -Value $PierCriteria
+    return '=IF(COUNTIFS({0}!$A:$A,"{1}",{0}!$B:$B,{2})=0,"",{3}({0}!${4}:${4},{0}!$A:$A,"{1}",{0}!$B:$B,{2}))' -f $SourceSheet, $criteria, $StoryCellReference, $AggregateFunction, $ValueColumn
+}
+
+function New-CellCriteriaAggregateFormula {
+    param(
+        [string]$SourceSheet,
+        [string]$ValueColumn,
+        [string]$PierCellReference,
+        [string]$StoryCellReference,
+        [string]$AggregateFunction = "MAXIFS"
+    )
+
+    return '=IF(COUNTIFS({0}!$A:$A,{1},{0}!$B:$B,{2})=0,"",{3}({0}!${4}:${4},{0}!$A:$A,{1},{0}!$B:$B,{2}))' -f $SourceSheet, $PierCellReference, $StoryCellReference, $AggregateFunction, $ValueColumn
+}
+
 function Get-DesignCheckRows {
     param(
         [object[]]$EnvelopeRows
     )
 
     $rows = New-Object System.Collections.Generic.List[object]
+    $allPiersSheet = Get-ExcelSheetReferenceName -SheetName "All Piers"
     foreach ($row in @($EnvelopeRows)) {
+        $excelRow = $rows.Count + 2
         $wallLength = $row.WallLength_ft
         $asLeft = $row.RequiredSteelLeft_in2
         $asRight = $row.RequiredSteelRight_in2
@@ -1014,25 +1560,26 @@ function Get-DesignCheckRows {
         # Preserve the legacy reference workbook formula form for these downstream checks.
         $phiMnLeftKin = if ($null -ne $dLeft -and $null -ne $aLeft -and $null -ne $asLeft) { (0.9 * 60.0 * [double]$asLeft * ($dLeft * 12.0)) - ($aLeft / 2.0) } else { $null }
         $phiMnRightKin = if ($null -ne $dRight -and $null -ne $aRight -and $null -ne $asRight) { (0.9 * 60.0 * [double]$asRight * ($dRight * 12.0)) - ($aRight / 2.0) } else { $null }
+        $storyRef = "`$A$excelRow"
 
         $rows.Add([pscustomobject]@{
             Story = $row.Story
-            WallLength_ft = $wallLength
-            "AS_REQ_LEFT_in^2" = $asLeft
-            "AS_REQ_RIGHT_in^2" = $asRight
-            "LRFDEnvMaxM3_kip-ft" = $row.LRFDEnvMaxM3_kip_ft
-            "LRFDEnvMinM3_kip-ft" = $row.LRFDEnvMinM3_kip_ft
-            BoundaryZoneLeft_ft = $bZoneLeft
-            BoundaryZoneRight_ft = $bZoneRight
+            WallLength_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "C" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $wallLength
+            "AS_REQ_LEFT_in^2" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "D" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $asLeft
+            "AS_REQ_RIGHT_in^2" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "E" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $asRight
+            "LRFDEnvMaxM3_kip-ft" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "F" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $row.LRFDEnvMaxM3_kip_ft
+            "LRFDEnvMinM3_kip-ft" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "G" -PierCriteria $row.Pier -StoryCellReference $storyRef -AggregateFunction "MINIFS") -CachedValue $row.LRFDEnvMinM3_kip_ft
+            BoundaryZoneLeft_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "H" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $bZoneLeft
+            BoundaryZoneRight_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "I" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $bZoneRight
             Message = $row.Messages
-            "d-left-bond" = Get-DesignCheckValue -Value $dLeft
-            "d-right-bond" = Get-DesignCheckValue -Value $dRight
-            "a (in)-left bond" = Get-DesignCheckValue -Value $aLeft
-            "a (in)-right bond" = Get-DesignCheckValue -Value $aRight
-            "phi*Mn(left)(k-in)" = Get-DesignCheckValue -Value $phiMnLeftKin
-            "phi*Mn(right)(k-in)" = Get-DesignCheckValue -Value $phiMnRightKin
-            "phi*Mn(left)(k-ft)" = if ($null -ne $phiMnLeftKin) { Get-DesignCheckValue -Value ($phiMnLeftKin / 12.0) } else { "" }
-            "phi*Mn(right)(k-ft)" = if ($null -ne $phiMnRightKin) { Get-DesignCheckValue -Value ($phiMnRightKin / 12.0) } else { "" }
+            "d-left-bond" = New-FormulaCell -Formula ('=IF(OR(B{0}="",G{0}=""),"",B{0}-G{0}/2)' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $dLeft)
+            "d-right-bond" = New-FormulaCell -Formula ('=IF(OR(B{0}="",H{0}=""),"",B{0}-H{0}/2)' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $dRight)
+            "a (in)-left bond" = New-FormulaCell -Formula ('=IF(C{0}="","",(60*C{0})/(0.85*5*10))' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $aLeft)
+            "a (in)-right bond" = New-FormulaCell -Formula ('=IF(D{0}="","",(60*D{0})/(0.85*5*10))' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $aRight)
+            "phi*Mn(left)(k-in)" = New-FormulaCell -Formula ('=IF(OR(C{0}="",J{0}="",L{0}=""),"",0.9*60*C{0}*(J{0}*12)-L{0}/2)' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $phiMnLeftKin)
+            "phi*Mn(right)(k-in)" = New-FormulaCell -Formula ('=IF(OR(D{0}="",K{0}="",M{0}=""),"",0.9*60*D{0}*(K{0}*12)-M{0}/2)' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $phiMnRightKin)
+            "phi*Mn(left)(k-ft)" = New-FormulaCell -Formula ('=IF(N{0}="","",N{0}/12)' -f $excelRow) -CachedValue $(if ($null -ne $phiMnLeftKin) { Get-DesignCheckValue -Value ($phiMnLeftKin / 12.0) } else { "" })
+            "phi*Mn(right)(k-ft)" = New-FormulaCell -Formula ('=IF(O{0}="","",O{0}/12)' -f $excelRow) -CachedValue $(if ($null -ne $phiMnRightKin) { Get-DesignCheckValue -Value ($phiMnRightKin / 12.0) } else { "" })
         }) | Out-Null
     }
 
@@ -1120,13 +1667,30 @@ function New-WorkbookSheetDefinitions {
         "ErrMsg"
     )
 
+    $asMasterSheet = Get-ExcelSheetReferenceName -SheetName "As Master"
+    $designMasterSheet = Get-ExcelSheetReferenceName -SheetName "Design Master"
+    $allPiersSheet = Get-ExcelSheetReferenceName -SheetName "All Piers"
+    $asMasterRowByStory = @{}
+    for ($index = 0; $index -lt $storyNames.Count; $index++) {
+        $asMasterRowByStory[$storyNames[$index]] = $index + 3
+    }
+
     $asMasterGrid = New-Object System.Collections.Generic.List[object]
     $asMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
     $asMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
-    foreach ($storyName in $storyNames) {
-        $asMasterGrid.Add(@($storyName) + @($scheduleColumns | ForEach-Object {
-                    Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $storyName -Side $_.Side
-                })) | Out-Null
+    for ($storyIndex = 0; $storyIndex -lt $storyNames.Count; $storyIndex++) {
+        $storyName = $storyNames[$storyIndex]
+        $excelRow = $storyIndex + 3
+        $storyRef = "`$A$excelRow"
+        $asMasterCells = New-Object System.Collections.Generic.List[object]
+        foreach ($column in $scheduleColumns) {
+            $required = Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $column.Pier -Story $storyName -Side $column.Side
+            $valueColumn = if ($column.Side -eq "LEFT") { "D" } else { "E" }
+            $pierCriteria = if ($column.Pier -eq "W1") { "W1*" } else { $column.Pier }
+            $asMasterCells.Add((New-FormulaCell -Formula (New-RequiredSteelFormula -SourceSheet $allPiersSheet -ValueColumn $valueColumn -PierCriteria $pierCriteria -StoryCellReference $storyRef) -CachedValue $required)) | Out-Null
+        }
+
+        $asMasterGrid.Add(@($storyName) + @($asMasterCells.ToArray())) | Out-Null
     }
 
     $designValueByStory = @{}
@@ -1143,6 +1707,14 @@ function New-WorkbookSheetDefinitions {
     }
 
     $flippedStories = @($storyNames | Sort-Object { Get-StorySortKey -StoryName $_ } -Descending)
+    $dmRequiredFirstRow = 4
+    $dmDesignValueFirstRow = $dmRequiredFirstRow + $storyNames.Count + 4
+    $dmDesignIdFirstRow = $dmDesignValueFirstRow + $storyNames.Count + 4
+    $dmIdRowByStory = @{}
+    for ($index = 0; $index -lt $storyNames.Count; $index++) {
+        $dmIdRowByStory[$storyNames[$index]] = $dmDesignIdFirstRow + $index
+    }
+
     $designMasterGrid = New-Object System.Collections.Generic.List[object]
     $designMasterGrid.Add(@("As required") + @("") * 15 + @("As required (flipped)") + @("") * 14) | Out-Null
     $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
@@ -1150,11 +1722,16 @@ function New-WorkbookSheetDefinitions {
     for ($index = 0; $index -lt $storyNames.Count; $index++) {
         $storyName = $storyNames[$index]
         $flippedStory = $flippedStories[$index]
-        $designMasterGrid.Add(@($storyName) + @($scheduleColumns | ForEach-Object {
-                    Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $storyName -Side $_.Side
-                }) + @("", $flippedStory) + @($scheduleColumns | ForEach-Object {
-                    Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $flippedStory -Side $_.Side
-                })) | Out-Null
+        $leftCells = New-Object System.Collections.Generic.List[object]
+        $rightCells = New-Object System.Collections.Generic.List[object]
+        for ($columnIndex = 0; $columnIndex -lt $scheduleColumns.Count; $columnIndex++) {
+            $excelColumn = ConvertTo-ColumnName -Index ($columnIndex + 2)
+            $leftRequired = Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $scheduleColumns[$columnIndex].Pier -Story $storyName -Side $scheduleColumns[$columnIndex].Side
+            $rightRequired = Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $scheduleColumns[$columnIndex].Pier -Story $flippedStory -Side $scheduleColumns[$columnIndex].Side
+            $leftCells.Add((New-FormulaCell -Formula ("={0}!{1}{2}" -f $asMasterSheet, $excelColumn, $asMasterRowByStory[$storyName]) -CachedValue $leftRequired)) | Out-Null
+            $rightCells.Add((New-FormulaCell -Formula ("={0}!{1}{2}" -f $asMasterSheet, $excelColumn, $asMasterRowByStory[$flippedStory]) -CachedValue $rightRequired)) | Out-Null
+        }
+        $designMasterGrid.Add(@($storyName) + @($leftCells.ToArray()) + @("", $flippedStory) + @($rightCells.ToArray())) | Out-Null
     }
     $designMasterGrid.Add(@("")) | Out-Null
     $designMasterGrid.Add(@("design value>As required") + @("") * 15 + @("design value>As required (flipped)") + @("") * 14) | Out-Null
@@ -1163,7 +1740,15 @@ function New-WorkbookSheetDefinitions {
     for ($index = 0; $index -lt $storyNames.Count; $index++) {
         $storyName = $storyNames[$index]
         $flippedStory = $flippedStories[$index]
-        $designMasterGrid.Add(@($storyName) + @($designValueByStory[$storyName]) + @("", $flippedStory) + @($designValueByStory[$flippedStory])) | Out-Null
+        $leftCells = New-Object System.Collections.Generic.List[object]
+        $rightCells = New-Object System.Collections.Generic.List[object]
+        for ($columnIndex = 0; $columnIndex -lt $scheduleColumns.Count; $columnIndex++) {
+            $leftColumn = ConvertTo-ColumnName -Index ($columnIndex + 2)
+            $rightColumn = ConvertTo-ColumnName -Index ($columnIndex + 18)
+            $leftCells.Add((New-FormulaCell -Formula (New-DesignValueFormula -RequiredAreaCellReference ("{0}{1}" -f $leftColumn, ($dmRequiredFirstRow + $index))) -CachedValue $designValueByStory[$storyName][$columnIndex])) | Out-Null
+            $rightCells.Add((New-FormulaCell -Formula (New-DesignValueFormula -RequiredAreaCellReference ("{0}{1}" -f $rightColumn, ($dmRequiredFirstRow + $index))) -CachedValue $designValueByStory[$flippedStory][$columnIndex])) | Out-Null
+        }
+        $designMasterGrid.Add(@($storyName) + @($leftCells.ToArray()) + @("", $flippedStory) + @($rightCells.ToArray())) | Out-Null
     }
     $designMasterGrid.Add(@("")) | Out-Null
     $designMasterGrid.Add(@("design id") + @("") * 15 + @("design id (flipped)") + @("") * 14) | Out-Null
@@ -1172,7 +1757,15 @@ function New-WorkbookSheetDefinitions {
     for ($index = 0; $index -lt $storyNames.Count; $index++) {
         $storyName = $storyNames[$index]
         $flippedStory = $flippedStories[$index]
-        $designMasterGrid.Add(@($storyName) + @($designIdByStory[$storyName]) + @("", $flippedStory) + @($designIdByStory[$flippedStory])) | Out-Null
+        $leftCells = New-Object System.Collections.Generic.List[object]
+        $rightCells = New-Object System.Collections.Generic.List[object]
+        for ($columnIndex = 0; $columnIndex -lt $scheduleColumns.Count; $columnIndex++) {
+            $leftColumn = ConvertTo-ColumnName -Index ($columnIndex + 2)
+            $rightColumn = ConvertTo-ColumnName -Index ($columnIndex + 18)
+            $leftCells.Add((New-FormulaCell -Formula (New-DesignIdFormula -RequiredAreaCellReference ("{0}{1}" -f $leftColumn, ($dmRequiredFirstRow + $index))) -CachedValue $designIdByStory[$storyName][$columnIndex])) | Out-Null
+            $rightCells.Add((New-FormulaCell -Formula (New-DesignIdFormula -RequiredAreaCellReference ("{0}{1}" -f $rightColumn, ($dmRequiredFirstRow + $index))) -CachedValue $designIdByStory[$flippedStory][$columnIndex])) | Out-Null
+        }
+        $designMasterGrid.Add(@($storyName) + @($leftCells.ToArray()) + @("", $flippedStory) + @($rightCells.ToArray())) | Out-Null
     }
 
     $tableGrid = New-Object System.Collections.Generic.List[object]
@@ -1181,7 +1774,12 @@ function New-WorkbookSheetDefinitions {
     $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
     $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
     foreach ($storyName in $flippedStories) {
-        $tableGrid.Add(@($storyName) + @($designIdByStory[$storyName])) | Out-Null
+        $tableCells = New-Object System.Collections.Generic.List[object]
+        for ($columnIndex = 0; $columnIndex -lt $scheduleColumns.Count; $columnIndex++) {
+            $designMasterColumn = ConvertTo-ColumnName -Index ($columnIndex + 2)
+            $tableCells.Add((New-FormulaCell -Formula ("={0}!{1}{2}" -f $designMasterSheet, $designMasterColumn, $dmIdRowByStory[$storyName]) -CachedValue $designIdByStory[$storyName][$columnIndex])) | Out-Null
+        }
+        $tableGrid.Add(@($storyName) + @($tableCells.ToArray())) | Out-Null
     }
 
     $hierarchyGrid = New-Object System.Collections.Generic.List[object]
@@ -1201,10 +1799,34 @@ function New-WorkbookSheetDefinitions {
         Rows = Convert-ObjectsToSheetRows -Rows $InfoRows -Headers $infoHeaders
     }) | Out-Null
 
+    $rawStationSheet = Get-ExcelSheetReferenceName -SheetName "Raw Station Results"
+    $allPiersWorkbookRows = New-Object System.Collections.Generic.List[object]
+    $envelopeIndex = 0
+    foreach ($row in @($EnvelopeRows)) {
+        $excelRow = $envelopeIndex + 2
+        $pierRef = "`$A$excelRow"
+        $storyRef = "`$B$excelRow"
+        $allPiersWorkbookRows.Add([pscustomobject]@{
+            Pier = $row.Pier
+            Story = $row.Story
+            WallLength_ft = $row.WallLength_ft
+            RequiredSteelLeft_in2 = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "N" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.RequiredSteelLeft_in2
+            RequiredSteelRight_in2 = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "O" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.RequiredSteelRight_in2
+            LRFDEnvMaxM3_kip_ft = $row.LRFDEnvMaxM3_kip_ft
+            LRFDEnvMinM3_kip_ft = $row.LRFDEnvMinM3_kip_ft
+            MaxBZoneL_ft = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "S" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.MaxBZoneL_ft
+            MaxBZoneR_ft = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "T" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.MaxBZoneR_ft
+            MaxDCRatio = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "K" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.MaxDCRatio
+            PierSecTypes = $row.PierSecTypes
+            Messages = $row.Messages
+        }) | Out-Null
+        $envelopeIndex++
+    }
+
     $sheetDefinitions.Add([pscustomobject]@{
         Name = "All Piers"
         Headers = $envelopeHeaders
-        Rows = Convert-ObjectsToSheetRows -Rows $EnvelopeRows -Headers $envelopeHeaders -HighlightMessages
+        Rows = Convert-ObjectsToSheetRows -Rows $allPiersWorkbookRows.ToArray() -Headers $envelopeHeaders -HighlightMessages
     }) | Out-Null
 
     foreach ($pierLabel in @($EnvelopeRows | Select-Object -ExpandProperty Pier -Unique | Sort-Object { Get-PierSortKey -PierLabel $_ })) {
@@ -1225,14 +1847,18 @@ function New-WorkbookSheetDefinitions {
     $envelopeCount = ($EnvelopeRows | Measure-Object).Count
     $warningCount = ($WarningRows | Measure-Object).Count
     $missingWallLengthCount = @($EnvelopeRows | Where-Object { $null -eq $_.WallLength_ft -or $_.WallLength_ft -eq "" }).Count
+    $lastEnvelopeRow = $envelopeCount + 1
+    $lastDesignIdRow = $dmDesignIdFirstRow + $storyNames.Count - 1
+    $rawStationSheet = Get-ExcelSheetReferenceName -SheetName "Raw Station Results"
+    $warningsSheet = Get-ExcelSheetReferenceName -SheetName "Warnings"
     $sanityGrid = @(
         @("Check", "Status", "Value", "Notes"),
         @("Reference sheets present", "OK", "15/15", "Generated workbook includes every sheet from the reference shear-wall-design workbook."),
-        @("Raw station rows", $(if ($stationCount -gt 0) { "OK" } else { "REVIEW" }), $stationCount, "Direct ETABS GetPierSummaryResults rows."),
-        @("Pier/story envelope rows", $(if ($envelopeCount -gt 0) { "OK" } else { "REVIEW" }), $envelopeCount, "Rows used by All Piers, As Master, Design Master, and table output."),
-        @("ETABS warning rows", $(if ($warningCount -eq 0) { "OK" } else { "REVIEW" }), $warningCount, "Warning rows are listed on the Warnings sheet."),
-        @("EXCEEDS HIERARCHY cells", $(if ($exceedsCount -eq 0) { "OK" } else { "REVIEW" }), $exceedsCount, "Schedule cells that exceed the Master Design Hierarchy."),
-        @("Missing wall lengths", $(if ($missingWallLengthCount -eq 0) { "OK" } else { "REVIEW" }), $missingWallLengthCount, "Wall lengths are needed for downstream d and phi*Mn check columns.")
+        @("Raw station rows", (New-FormulaCell -Formula '=IF(C3>0,"OK","REVIEW")' -CachedValue $(if ($stationCount -gt 0) { "OK" } else { "REVIEW" })), (New-FormulaCell -Formula ("=COUNTA({0}!`$A:`$A)-1" -f $rawStationSheet) -CachedValue $stationCount), "Direct ETABS GetPierSummaryResults rows."),
+        @("Pier/story envelope rows", (New-FormulaCell -Formula '=IF(C4>0,"OK","REVIEW")' -CachedValue $(if ($envelopeCount -gt 0) { "OK" } else { "REVIEW" })), (New-FormulaCell -Formula ("=COUNTA({0}!`$A:`$A)-1" -f $allPiersSheet) -CachedValue $envelopeCount), "Rows used by All Piers, As Master, Design Master, and table output."),
+        @("ETABS warning rows", (New-FormulaCell -Formula '=IF(C5=0,"OK","REVIEW")' -CachedValue $(if ($warningCount -eq 0) { "OK" } else { "REVIEW" })), (New-FormulaCell -Formula ("=COUNTA({0}!`$A:`$A)-1" -f $warningsSheet) -CachedValue $warningCount), "Warning rows are listed on the Warnings sheet."),
+        @("EXCEEDS HIERARCHY cells", (New-FormulaCell -Formula '=IF(C6=0,"OK","REVIEW")' -CachedValue $(if ($exceedsCount -eq 0) { "OK" } else { "REVIEW" })), (New-FormulaCell -Formula ("=COUNTIF({0}!`$B`${1}:`$AE`${2},""EXCEEDS HIERARCHY"")" -f $designMasterSheet, $dmDesignIdFirstRow, $lastDesignIdRow) -CachedValue $exceedsCount), "Schedule cells that exceed the Master Design Hierarchy."),
+        @("Missing wall lengths", (New-FormulaCell -Formula '=IF(C7=0,"OK","REVIEW")' -CachedValue $(if ($missingWallLengthCount -eq 0) { "OK" } else { "REVIEW" })), (New-FormulaCell -Formula ("=COUNTBLANK({0}!`$C`$2:`$C`${1})" -f $allPiersSheet, $lastEnvelopeRow) -CachedValue $missingWallLengthCount), "Wall lengths are needed for downstream d and phi*Mn check columns.")
     )
     $sheetDefinitions.Add((New-GridSheetDefinition -Name "Sanity Checks" -GridRows $sanityGrid)) | Out-Null
 
@@ -1762,6 +2388,7 @@ $infoRows = @(
     [pscustomobject]@{ Field = "RawStationRowCount"; Value = $stationRowCount },
     [pscustomobject]@{ Field = "StoryEnvelopeRowCount"; Value = $envelopeRowCount },
     [pscustomobject]@{ Field = "WarningRowCount"; Value = $warningRowCount },
+    [pscustomobject]@{ Field = "QaQcAlignmentToleranceIn2"; Value = $QaToleranceIn2 },
     [pscustomobject]@{ Field = "Source"; Value = "SapModel.DesignShearWall.GetPierSummaryResults" },
     [pscustomobject]@{ Field = "EnvelopeRule"; Value = "Per pier/story, use max AsLeft and max AsRight across ETABS station rows." }
 )
@@ -1770,10 +2397,11 @@ $infoPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "info.csv"
 $stationPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "raw-station-results.csv"
 $envelopePath = Join-Path -Path $resolvedOutputDirectory -ChildPath "story-envelope.csv"
 $warningPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "warnings.csv"
+$qaQcPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "qa-qc-alignment.csv"
 
 $sheetDefinitions = New-WorkbookSheetDefinitions -InfoRows $infoRows -EnvelopeRows $envelopeRows -StationRows $stationRows -WarningRows $warningRows
 Write-XlsxWorkbook -Path $resolvedOutputWorkbookPath -SheetDefinitions $sheetDefinitions
-Invoke-WorkbookAutoFit -Path $resolvedOutputWorkbookPath
+$qaQcSummary = Invoke-WorkbookQaQcAlignment -Path $resolvedOutputWorkbookPath -SheetDefinitions $sheetDefinitions -StationRows $stationRows -EnvelopeRows $envelopeRows -ToleranceIn2 $QaToleranceIn2 -CsvPath $(if ($NoCsv) { $null } else { $qaQcPath })
 
 if (-not $NoCsv) {
     Export-Rows -Path $infoPath -Rows $infoRows
@@ -1799,11 +2427,16 @@ $result = [pscustomobject]@{
     RawStationResultsCsv = if ($NoCsv) { $null } else { $stationPath }
     StoryEnvelopeCsv = if ($NoCsv) { $null } else { $envelopePath }
     WarningsCsv = if ($NoCsv) { $null } else { $warningPath }
+    QaQcAlignmentCsv = if ($NoCsv) { $null } else { $qaQcPath }
     ForceUnits = $units.Force
     LengthUnits = $units.Length
     RawStationRowCount = $stationRowCount
     StoryEnvelopeRowCount = $envelopeRowCount
     WarningRowCount = $warningRowCount
+    QaQcAlignmentStatus = $qaQcSummary.Status
+    QaQcAlignmentCheckedCount = $qaQcSummary.CheckedCount
+    QaQcAlignmentFailureCount = $qaQcSummary.FailureCount
+    QaQcAlignmentWarningCount = $qaQcSummary.WarningCount
 }
 
 if ($AsJson) {

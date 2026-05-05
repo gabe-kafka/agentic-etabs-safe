@@ -32,7 +32,7 @@ Useful filters:
 Outputs:
 
 - `shear-wall-design-required-steel.xlsx`: deliverable workbook parallel to the shear-wall design workbook.
-- `info.csv`, `raw-station-results.csv`, `story-envelope.csv`, `warnings.csv`: supporting audit files, unless `-NoCsv` is used.
+- `info.csv`, `raw-station-results.csv`, `story-envelope.csv`, `warnings.csv`, `qa-qc-alignment.csv`: supporting audit files, unless `-NoCsv` is used.
 
 Workbook tabs:
 
@@ -46,11 +46,35 @@ Workbook tabs:
 - `Sanity Checks`: row counts, warning count, hierarchy exceedance count, and missing wall length checks.
 - `Raw Station Results`: direct ETABS Top/Bottom station rows from `SapModel.DesignShearWall.GetPierSummaryResults`.
 - `Warnings`: ETABS warning/error rows from the live design summary.
+- `QA_QC Alignment`: final alignment gate comparing ETABS station maxima, pier/story envelopes, and visible workbook output cells.
+
+Dynamic workbook wiring:
+
+- `Raw Station Results` is the static ETABS source pull.
+- `All Piers` uses Excel formulas to envelope required steel, boundary zone lengths, and D/C ratio from `Raw Station Results`.
+- `As Master` uses formulas from `All Piers`.
+- `Design Master` uses formulas from `As Master` and `Master Design Hierarchy`.
+- `SHEAR WALL TABLE OUTPUT` uses formulas from `Design Master`.
+- Per-pier sheets use formulas from `All Piers` for required steel and downstream design checks.
+- `Sanity Checks` uses formulas for row counts, warning counts, hierarchy exceedance count, and missing wall lengths.
+
+QA/QC alignment:
+
+- The script writes cached ETABS values into formula cells, immediately reopens the workbook, and adds `QA_QC Alignment`.
+- The alignment gate compares live ETABS station maxima to the computed envelope, then compares the envelope to `All Piers`, `As Master`, and the per-pier design tabs.
+- Default tolerance is `0.005 in^2`. Override only when there is a deliberate rounding requirement:
+
+```powershell
+.\scripts\export-etabs-shear-wall-required-steel-pipeline.ps1 -QaToleranceIn2 0.01
+```
+
+- If any alignment check fails, the workbook is still written for review, but the script exits with an error and the failures appear at the top of `QA_QC Alignment`.
 
 Checks before using the data:
 
 - Verify the `Info` tab matches the intended ETABS model path.
 - Verify the model save time is newer than any Excel workbook you are comparing against.
+- Verify `QA_QC Alignment` has no `Error` severity rows.
 - Spot-check suspicious values in `Raw Station Results` before using `All Piers`.
 - Treat open Excel workbooks as downstream artifacts, not source truth, unless their metadata matches the current pull.
 
