@@ -1252,11 +1252,23 @@ function New-RequiredSteelFormula {
         [string]$SourceSheet,
         [string]$ValueColumn,
         [string]$PierCriteria,
-        [string]$StoryCellReference
+        [string]$StoryCellReference,
+        [int]$LastDataRow
     )
 
     $criteria = ConvertTo-ExcelStringLiteral -Value $PierCriteria
-    return '=IF(COUNTIFS({0}!$A:$A,"{1}",{0}!$B:$B,{2})=0,"",MAXIFS({0}!${3}:${3},{0}!$A:$A,"{1}",{0}!$B:$B,{2}))' -f $SourceSheet, $criteria, $StoryCellReference, $ValueColumn
+    $pierRange = "{0}!`$A`$2:`$A`${1}" -f $SourceSheet, $LastDataRow
+    $storyRange = "{0}!`$B`$2:`$B`${1}" -f $SourceSheet, $LastDataRow
+    $valueRange = "{0}!`${1}`$2:`${1}`${2}" -f $SourceSheet, $ValueColumn, $LastDataRow
+    if ($PierCriteria.EndsWith("*")) {
+        $prefix = ConvertTo-ExcelStringLiteral -Value $PierCriteria.TrimEnd("*")
+        $pierPredicate = 'LEFT({0},{1})="{2}"' -f $pierRange, $prefix.Length, $prefix
+    }
+    else {
+        $pierPredicate = '{0}="{1}"' -f $pierRange, $criteria
+    }
+    $storyPredicate = "{0}={1}" -f $storyRange, $StoryCellReference
+    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",IFERROR(AGGREGATE(14,6,{2}/(({0})*({1})),1),""))' -f $pierPredicate, $storyPredicate, $valueRange
 }
 
 function New-DesignValueFormula {
@@ -1523,11 +1535,21 @@ function New-CountedAggregateFormula {
         [string]$ValueColumn,
         [string]$PierCriteria,
         [string]$StoryCellReference,
-        [string]$AggregateFunction = "MAXIFS"
+        [string]$AggregateFunction = "MAXIFS",
+        [int]$LastDataRow
     )
 
     $criteria = ConvertTo-ExcelStringLiteral -Value $PierCriteria
-    return '=IF(COUNTIFS({0}!$A:$A,"{1}",{0}!$B:$B,{2})=0,"",{3}({0}!${4}:${4},{0}!$A:$A,"{1}",{0}!$B:$B,{2}))' -f $SourceSheet, $criteria, $StoryCellReference, $AggregateFunction, $ValueColumn
+    $aggregateIndex = switch ($AggregateFunction.ToUpperInvariant()) {
+        "MINIFS" { 15 }
+        default { 14 }
+    }
+    $pierRange = "{0}!`$A`$2:`$A`${1}" -f $SourceSheet, $LastDataRow
+    $storyRange = "{0}!`$B`$2:`$B`${1}" -f $SourceSheet, $LastDataRow
+    $valueRange = "{0}!`${1}`$2:`${1}`${2}" -f $SourceSheet, $ValueColumn, $LastDataRow
+    $pierPredicate = '{0}="{1}"' -f $pierRange, $criteria
+    $storyPredicate = "{0}={1}" -f $storyRange, $StoryCellReference
+    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",IFERROR(AGGREGATE({2},6,{3}/(({0})*({1})),1),""))' -f $pierPredicate, $storyPredicate, $aggregateIndex, $valueRange
 }
 
 function New-CellCriteriaAggregateFormula {
@@ -1536,15 +1558,26 @@ function New-CellCriteriaAggregateFormula {
         [string]$ValueColumn,
         [string]$PierCellReference,
         [string]$StoryCellReference,
-        [string]$AggregateFunction = "MAXIFS"
+        [string]$AggregateFunction = "MAXIFS",
+        [int]$LastDataRow
     )
 
-    return '=IF(COUNTIFS({0}!$A:$A,{1},{0}!$B:$B,{2})=0,"",{3}({0}!${4}:${4},{0}!$A:$A,{1},{0}!$B:$B,{2}))' -f $SourceSheet, $PierCellReference, $StoryCellReference, $AggregateFunction, $ValueColumn
+    $aggregateIndex = switch ($AggregateFunction.ToUpperInvariant()) {
+        "MINIFS" { 15 }
+        default { 14 }
+    }
+    $pierRange = "{0}!`$A`$2:`$A`${1}" -f $SourceSheet, $LastDataRow
+    $storyRange = "{0}!`$B`$2:`$B`${1}" -f $SourceSheet, $LastDataRow
+    $valueRange = "{0}!`${1}`$2:`${1}`${2}" -f $SourceSheet, $ValueColumn, $LastDataRow
+    $pierPredicate = "{0}={1}" -f $pierRange, $PierCellReference
+    $storyPredicate = "{0}={1}" -f $storyRange, $StoryCellReference
+    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",IFERROR(AGGREGATE({2},6,{3}/(({0})*({1})),1),""))' -f $pierPredicate, $storyPredicate, $aggregateIndex, $valueRange
 }
 
 function Get-DesignCheckRows {
     param(
-        [object[]]$EnvelopeRows
+        [object[]]$EnvelopeRows,
+        [int]$AllPiersLastDataRow
     )
 
     $rows = New-Object System.Collections.Generic.List[object]
@@ -1569,13 +1602,13 @@ function Get-DesignCheckRows {
 
         $rows.Add([pscustomobject]@{
             Story = $row.Story
-            WallLength_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "C" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $wallLength
-            "AS_REQ_LEFT_in^2" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "D" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $asLeft
-            "AS_REQ_RIGHT_in^2" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "E" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $asRight
-            "LRFDEnvMaxM3_kip-ft" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "F" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $row.LRFDEnvMaxM3_kip_ft
-            "LRFDEnvMinM3_kip-ft" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "G" -PierCriteria $row.Pier -StoryCellReference $storyRef -AggregateFunction "MINIFS") -CachedValue $row.LRFDEnvMinM3_kip_ft
-            BoundaryZoneLeft_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "H" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $bZoneLeft
-            BoundaryZoneRight_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "I" -PierCriteria $row.Pier -StoryCellReference $storyRef) -CachedValue $bZoneRight
+            WallLength_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "C" -PierCriteria $row.Pier -StoryCellReference $storyRef -LastDataRow $AllPiersLastDataRow) -CachedValue $wallLength
+            "AS_REQ_LEFT_in^2" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "D" -PierCriteria $row.Pier -StoryCellReference $storyRef -LastDataRow $AllPiersLastDataRow) -CachedValue $asLeft
+            "AS_REQ_RIGHT_in^2" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "E" -PierCriteria $row.Pier -StoryCellReference $storyRef -LastDataRow $AllPiersLastDataRow) -CachedValue $asRight
+            "LRFDEnvMaxM3_kip-ft" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "F" -PierCriteria $row.Pier -StoryCellReference $storyRef -LastDataRow $AllPiersLastDataRow) -CachedValue $row.LRFDEnvMaxM3_kip_ft
+            "LRFDEnvMinM3_kip-ft" = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "G" -PierCriteria $row.Pier -StoryCellReference $storyRef -AggregateFunction "MINIFS" -LastDataRow $AllPiersLastDataRow) -CachedValue $row.LRFDEnvMinM3_kip_ft
+            BoundaryZoneLeft_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "H" -PierCriteria $row.Pier -StoryCellReference $storyRef -LastDataRow $AllPiersLastDataRow) -CachedValue $bZoneLeft
+            BoundaryZoneRight_ft = New-FormulaCell -Formula (New-CountedAggregateFormula -SourceSheet $allPiersSheet -ValueColumn "I" -PierCriteria $row.Pier -StoryCellReference $storyRef -LastDataRow $AllPiersLastDataRow) -CachedValue $bZoneRight
             Message = $row.Messages
             "d-left-bond" = New-FormulaCell -Formula ('=IF(OR(B{0}="",G{0}=""),"",B{0}-G{0}/2)' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $dLeft)
             "d-right-bond" = New-FormulaCell -Formula ('=IF(OR(B{0}="",H{0}=""),"",B{0}-H{0}/2)' -f $excelRow) -CachedValue (Get-DesignCheckValue -Value $dRight)
@@ -1604,6 +1637,8 @@ function New-WorkbookSheetDefinitions {
     $storyNames = Get-ReferenceStoryNames
     $scheduleColumns = Get-ScheduleColumns
     $envelopeLookup = New-EnvelopeLookup -EnvelopeRows $EnvelopeRows
+    $lastRawStationDataRow = [Math]::Max(2, (($StationRows | Measure-Object).Count + 1))
+    $lastAllPiersDataRow = [Math]::Max(2, (($EnvelopeRows | Measure-Object).Count + 1))
     $infoHeaders = @("Field", "Value")
     $envelopeHeaders = @(
         "Pier",
@@ -1692,7 +1727,7 @@ function New-WorkbookSheetDefinitions {
             $required = Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $column.Pier -Story $storyName -Side $column.Side
             $valueColumn = if ($column.Side -eq "LEFT") { "D" } else { "E" }
             $pierCriteria = if ($column.Pier -eq "W1") { "W1*" } else { $column.Pier }
-            $asMasterCells.Add((New-FormulaCell -Formula (New-RequiredSteelFormula -SourceSheet $allPiersSheet -ValueColumn $valueColumn -PierCriteria $pierCriteria -StoryCellReference $storyRef) -CachedValue $required)) | Out-Null
+            $asMasterCells.Add((New-FormulaCell -Formula (New-RequiredSteelFormula -SourceSheet $allPiersSheet -ValueColumn $valueColumn -PierCriteria $pierCriteria -StoryCellReference $storyRef -LastDataRow $lastAllPiersDataRow) -CachedValue $required)) | Out-Null
         }
 
         $asMasterGrid.Add(@($storyName) + @($asMasterCells.ToArray())) | Out-Null
@@ -1815,13 +1850,13 @@ function New-WorkbookSheetDefinitions {
             Pier = $row.Pier
             Story = $row.Story
             WallLength_ft = $row.WallLength_ft
-            RequiredSteelLeft_in2 = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "N" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.RequiredSteelLeft_in2
-            RequiredSteelRight_in2 = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "O" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.RequiredSteelRight_in2
+            RequiredSteelLeft_in2 = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "N" -PierCellReference $pierRef -StoryCellReference $storyRef -LastDataRow $lastRawStationDataRow) -CachedValue $row.RequiredSteelLeft_in2
+            RequiredSteelRight_in2 = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "O" -PierCellReference $pierRef -StoryCellReference $storyRef -LastDataRow $lastRawStationDataRow) -CachedValue $row.RequiredSteelRight_in2
             LRFDEnvMaxM3_kip_ft = $row.LRFDEnvMaxM3_kip_ft
             LRFDEnvMinM3_kip_ft = $row.LRFDEnvMinM3_kip_ft
-            MaxBZoneL_ft = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "S" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.MaxBZoneL_ft
-            MaxBZoneR_ft = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "T" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.MaxBZoneR_ft
-            MaxDCRatio = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "K" -PierCellReference $pierRef -StoryCellReference $storyRef) -CachedValue $row.MaxDCRatio
+            MaxBZoneL_ft = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "S" -PierCellReference $pierRef -StoryCellReference $storyRef -LastDataRow $lastRawStationDataRow) -CachedValue $row.MaxBZoneL_ft
+            MaxBZoneR_ft = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "T" -PierCellReference $pierRef -StoryCellReference $storyRef -LastDataRow $lastRawStationDataRow) -CachedValue $row.MaxBZoneR_ft
+            MaxDCRatio = New-FormulaCell -Formula (New-CellCriteriaAggregateFormula -SourceSheet $rawStationSheet -ValueColumn "K" -PierCellReference $pierRef -StoryCellReference $storyRef -LastDataRow $lastRawStationDataRow) -CachedValue $row.MaxDCRatio
             PierSecTypes = $row.PierSecTypes
             Messages = $row.Messages
         }) | Out-Null
@@ -1836,7 +1871,7 @@ function New-WorkbookSheetDefinitions {
 
     foreach ($pierLabel in @($EnvelopeRows | Select-Object -ExpandProperty Pier -Unique | Sort-Object { Get-PierSortKey -PierLabel $_ })) {
         $pierRows = @($EnvelopeRows | Where-Object { $_.Pier -eq $pierLabel })
-        $designCheckRows = Get-DesignCheckRows -EnvelopeRows $pierRows
+        $designCheckRows = Get-DesignCheckRows -EnvelopeRows $pierRows -AllPiersLastDataRow $lastAllPiersDataRow
         $sheetDefinitions.Add([pscustomobject]@{
             Name = $pierLabel
             Headers = $pierDesignHeaders
