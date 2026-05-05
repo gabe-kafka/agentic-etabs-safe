@@ -22,6 +22,9 @@ Do not recreate `sessions/`, `templates/`, `PLAN.md`, or `README.md` unless the 
 - Keep scripts small, task-specific, and usable against a live model.
 - Prefer ETABS/SAFE database tables and direct result calls over UI scraping.
 - Export plain CSV or XLSX outputs when the user needs reports.
+- Pull direct ETABS/SAFE values whenever they are available instead of inferring derived structural quantities.
+- If a task would require calculations beyond direct value pull, user-requested unit conversion, formatting, or explicit report aggregation, ask the user before doing it.
+- Default to efficient extraction of ETABS/SAFE values, not interpretation layers on top of those values.
 
 ## ETABS usage
 
@@ -29,6 +32,15 @@ Do not recreate `sessions/`, `templates/`, `PLAN.md`, or `README.md` unless the 
 - Resolve `ETABSv1.dll` from the running ETABS folder or a standard ETABS install path.
 - Work directly against the live `SapModel`.
 - Favor additive utilities: diagnostics, extraction, reporting, and narrowly scoped model edits.
+
+## ETABS shear wall required steel workflow
+
+- Use `scripts/export-etabs-shear-wall-required-steel-pipeline.ps1` for future shear wall required steel pulls.
+- Treat `SapModel.DesignShearWall.GetPierSummaryResults` as the source of truth for pier required steel.
+- Export both raw Top/Bottom station rows and a pier/story envelope with controlling station columns.
+- Do not treat an existing Excel design workbook as current unless its metadata matches the live ETABS model path and model save time.
+- If a workbook and ETABS disagree, re-pull from the live model before changing schedule/design values.
+- For downstream SAFE or schedule work, use the pipeline CSV outputs as the handoff artifact instead of copying values from a stale open workbook.
 
 ## ETABS meshing debug workflow
 
