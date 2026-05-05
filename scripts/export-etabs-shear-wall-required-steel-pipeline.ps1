@@ -723,6 +723,49 @@ with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as arch
     }
 }
 
+function Invoke-WorkbookAutoFit {
+    param(
+        [string]$Path
+    )
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    $pythonCode = @'
+import math
+import sys
+from pathlib import Path
+
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+
+path = Path(sys.argv[1])
+workbook = load_workbook(path)
+for worksheet in workbook.worksheets:
+    for column_cells in worksheet.columns:
+        max_length = 0
+        column_index = column_cells[0].column
+        for cell in column_cells:
+            value = cell.value
+            if value is None:
+                text = ""
+            else:
+                text = str(value)
+            for line in text.splitlines() or [""]:
+                max_length = max(max_length, len(line))
+
+        width = min(max(math.ceil((max_length * 1.08) + 2), 8), 120)
+        dimension = worksheet.column_dimensions[get_column_letter(column_index)]
+        dimension.width = width
+        dimension.bestFit = True
+
+workbook.save(path)
+'@
+
+    $pythonCode | & python - $resolvedPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python failed while applying workbook auto-width formatting."
+    }
+}
+
 function New-SheetRow {
     param(
         [object[]]$Cells,
@@ -793,7 +836,6 @@ function New-WorkbookSheetDefinitions {
         "MaxBZoneL_ft",
         "MaxBZoneR_ft",
         "MaxDCRatio",
-        "DesignTypes",
         "PierSecTypes",
         "Messages"
     )
@@ -804,7 +846,6 @@ function New-WorkbookSheetDefinitions {
         "MaxBZoneL_ft",
         "MaxBZoneR_ft",
         "MaxDCRatio",
-        "DesignTypes",
         "PierSecTypes",
         "Messages"
     )
@@ -813,7 +854,6 @@ function New-WorkbookSheetDefinitions {
         "Story",
         "Station",
         "PierLeg",
-        "DesignType",
         "PierSecType",
         "EdgeBar",
         "EndBar",
@@ -988,7 +1028,6 @@ function Get-ShearWallStationRows {
             Story = $storyNames[$index]
             Station = $stations[$index]
             PierLeg = $pierLegs[$index]
-            DesignType = $designTypes[$index]
             PierSecType = $pierSecTypes[$index]
             EdgeBar = $edgeBars[$index]
             EndBar = $endBars[$index]
@@ -1039,17 +1078,12 @@ function Get-EnvelopeRows {
                 MaxBZoneL_ft = $null
                 MaxBZoneR_ft = $null
                 MaxDCRatio = $null
-                DesignTypes = New-Object System.Collections.Generic.List[string]
                 PierSecTypes = New-Object System.Collections.Generic.List[string]
                 Messages = New-Object System.Collections.Generic.List[string]
             }
         }
 
         $entry = $entries[$key]
-        if (-not [string]::IsNullOrWhiteSpace($row.DesignType) -and -not $entry["DesignTypes"].Contains($row.DesignType)) {
-            $entry["DesignTypes"].Add($row.DesignType) | Out-Null
-        }
-
         if (-not [string]::IsNullOrWhiteSpace($row.PierSecType) -and -not $entry["PierSecTypes"].Contains($row.PierSecType)) {
             $entry["PierSecTypes"].Add($row.PierSecType) | Out-Null
         }
@@ -1087,7 +1121,6 @@ function Get-EnvelopeRows {
             MaxBZoneL_ft = $entry["MaxBZoneL_ft"]
             MaxBZoneR_ft = $entry["MaxBZoneR_ft"]
             MaxDCRatio = $entry["MaxDCRatio"]
-            DesignTypes = ($entry["DesignTypes"] -join " | ")
             PierSecTypes = ($entry["PierSecTypes"] -join " | ")
             Messages = ($entry["Messages"] -join " | ")
         }
@@ -1185,6 +1218,7 @@ $warningPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "warnings.csv
 
 $sheetDefinitions = New-WorkbookSheetDefinitions -InfoRows $infoRows -EnvelopeRows $envelopeRows -StationRows $stationRows -WarningRows $warningRows
 Write-XlsxWorkbook -Path $resolvedOutputWorkbookPath -SheetDefinitions $sheetDefinitions
+Invoke-WorkbookAutoFit -Path $resolvedOutputWorkbookPath
 
 if (-not $NoCsv) {
     Export-Rows -Path $infoPath -Rows $infoRows
