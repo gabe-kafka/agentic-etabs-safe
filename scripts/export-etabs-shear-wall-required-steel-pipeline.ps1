@@ -816,6 +816,8 @@ try:
     excel.Calculation = -4105  # xlCalculationAutomatic
     excel.CalculateFullRebuild()
     time.sleep(0.5)
+    for worksheet in workbook.Worksheets:
+        worksheet.UsedRange.Columns.AutoFit()
     workbook.Save()
     workbook.Close(SaveChanges=True)
 finally:
