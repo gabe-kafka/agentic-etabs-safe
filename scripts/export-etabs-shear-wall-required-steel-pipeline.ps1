@@ -1264,7 +1264,8 @@ function New-DesignValueFormula {
         [string]$RequiredAreaCellReference
     )
 
-    $areaRange = "$(Get-ExcelSheetReferenceName -SheetName "Master Design Hierarchy")!`$C`$2:`$C`$16"
+    $lastHierarchyRow = (Get-DesignHierarchy).Count + 1
+    $areaRange = "$(Get-ExcelSheetReferenceName -SheetName "Master Design Hierarchy")!`$C`$2:`$C`$$lastHierarchyRow"
     return '=IF({0}="","",IF({0}>=MAX({1}),"EXCEEDS HIERARCHY",IF({0}<MIN({1}),MIN({1}),INDEX({1},MATCH({0},{1},1)+1))))' -f $RequiredAreaCellReference, $areaRange
 }
 
@@ -1274,8 +1275,9 @@ function New-DesignIdFormula {
     )
 
     $hierarchySheet = Get-ExcelSheetReferenceName -SheetName "Master Design Hierarchy"
-    $areaRange = "$hierarchySheet!`$C`$2:`$C`$16"
-    $idRange = "$hierarchySheet!`$D`$2:`$D`$16"
+    $lastHierarchyRow = (Get-DesignHierarchy).Count + 1
+    $areaRange = "$hierarchySheet!`$C`$2:`$C`$$lastHierarchyRow"
+    $idRange = "$hierarchySheet!`$D`$2:`$D`$$lastHierarchyRow"
     return '=IF({0}="","",IF({0}>=MAX({1}),"EXCEEDS HIERARCHY",IF({0}<MIN({1}),INDEX({2},1),INDEX({2},MATCH({0},{1},1)+1))))' -f $RequiredAreaCellReference, $areaRange, $idRange
 }
 
@@ -1364,21 +1366,24 @@ function New-GridSheetDefinition {
 
 function Get-DesignHierarchy {
     $rows = @(
-        @{ Bar = 5; Rows = 3; Area = 1.840775391; Id = "3#5 E.F. @6" },
-        @{ Bar = 6; Rows = 3; Area = 2.650716563; Id = "3#6 E.F. @6" },
-        @{ Bar = 7; Rows = 3; Area = 3.607919766; Id = "3#7 E.F. @6" },
-        @{ Bar = 8; Rows = 3; Area = 4.712385000; Id = "3#8 E.F. @6" },
-        @{ Bar = 9; Rows = 3; Area = 5.964112266; Id = "3#9 E.F. @6" },
-        @{ Bar = 10; Rows = 3; Area = 7.363101563; Id = "3#10 E.F. @6" },
-        @{ Bar = 9; Rows = 5; Area = 9.940187109; Id = "5#9 E.F. @6" },
-        @{ Bar = 11; Rows = 4; Area = 11.87913719; Id = "4#11 E.F. @6" },
-        @{ Bar = 11; Rows = 5; Area = 14.84892148; Id = "5#11 E.F. @6" },
-        @{ Bar = 11; Rows = 6; Area = 17.81870578; Id = "6#11 E.F. @6" },
-        @{ Bar = 11; Rows = 7; Area = 20.78849008; Id = "7#11 E.F. @6" },
-        @{ Bar = 11; Rows = 8; Area = 23.75827438; Id = "8#11 E.F. @6" },
-        @{ Bar = 11; Rows = 9; Area = 26.72805867; Id = "9#11 E.F. @6" },
-        @{ Bar = 11; Rows = 10; Area = 29.69784297; Id = "10#11 E.F. @6" },
-        @{ Bar = 11; Rows = 11; Area = 32.66762727; Id = "11#11 E.F. @6" }
+        @{ Bar = 5; Rows = 3; Area = 1.840775391; Id = '3#5 E.F. @6"' },
+        @{ Bar = 6; Rows = 3; Area = 2.650716563; Id = '3#6 E.F. @6"' },
+        @{ Bar = 7; Rows = 3; Area = 3.607919766; Id = '3#7 E.F. @6"' },
+        @{ Bar = 8; Rows = 3; Area = 4.712385000; Id = '3#8 E.F. @6"' },
+        @{ Bar = 9; Rows = 3; Area = 5.964112266; Id = '3#9 E.F. @6"' },
+        @{ Bar = 10; Rows = 3; Area = 7.363101563; Id = '3#10 E.F. @6"' },
+        @{ Bar = 9; Rows = 5; Area = 9.940187109; Id = '5#9 E.F. @6"' },
+        @{ Bar = 11; Rows = 4; Area = 11.87913719; Id = '4#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 5; Area = 14.84892148; Id = '5#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 6; Area = 17.81870578; Id = '6#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 7; Area = 20.78849008; Id = '7#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 8; Area = 23.75827438; Id = '8#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 9; Area = 26.72805867; Id = '9#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 10; Area = 29.69784297; Id = '10#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 11; Area = 32.66762727; Id = '11#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 12; Area = 35.63741100; Id = '12#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 13; Area = 38.60719500; Id = '13#11 E.F. @6"' },
+        @{ Bar = 11; Rows = 14; Area = 41.57697900; Id = '14#11 E.F. @6"' }
     )
 
     return @($rows | ForEach-Object { [pscustomobject]$_ })
