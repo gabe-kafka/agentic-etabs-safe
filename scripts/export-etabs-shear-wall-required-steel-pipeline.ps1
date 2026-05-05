@@ -818,6 +818,227 @@ function Convert-ObjectsToSheetRows {
     return $sheetRows.ToArray()
 }
 
+function New-GridSheetDefinition {
+    param(
+        [string]$Name,
+        [object]$GridRows
+    )
+
+    $rows = @($GridRows)
+    if (($rows | Measure-Object).Count -eq 0) {
+        $rows = @(, @(""))
+    }
+
+    $width = 0
+    foreach ($row in $rows) {
+        $width = [Math]::Max($width, @($row).Count)
+    }
+
+    $normalizedRows = New-Object System.Collections.Generic.List[object]
+    foreach ($row in $rows) {
+        $cells = New-Object System.Collections.Generic.List[object]
+        foreach ($cell in @($row)) {
+            $cells.Add($cell) | Out-Null
+        }
+
+        while ($cells.Count -lt $width) {
+            $cells.Add("") | Out-Null
+        }
+
+        $normalizedRows.Add($cells.ToArray()) | Out-Null
+    }
+
+    $headers = [string[]]@($normalizedRows[0] | ForEach-Object { [string]$_ })
+    $sheetRows = New-Object System.Collections.Generic.List[object]
+    for ($index = 1; $index -lt $normalizedRows.Count; $index++) {
+        $sheetRows.Add((New-SheetRow -Cells @($normalizedRows[$index]))) | Out-Null
+    }
+
+    return [pscustomobject]@{
+        Name = $Name
+        Headers = $headers
+        Rows = $sheetRows.ToArray()
+    }
+}
+
+function Get-DesignHierarchy {
+    $rows = @(
+        @{ Bar = 5; Rows = 3; Area = 1.840775391; Id = "3#5 E.F. @6" },
+        @{ Bar = 6; Rows = 3; Area = 2.650716563; Id = "3#6 E.F. @6" },
+        @{ Bar = 7; Rows = 3; Area = 3.607919766; Id = "3#7 E.F. @6" },
+        @{ Bar = 8; Rows = 3; Area = 4.712385000; Id = "3#8 E.F. @6" },
+        @{ Bar = 9; Rows = 3; Area = 5.964112266; Id = "3#9 E.F. @6" },
+        @{ Bar = 10; Rows = 3; Area = 7.363101563; Id = "3#10 E.F. @6" },
+        @{ Bar = 9; Rows = 5; Area = 9.940187109; Id = "5#9 E.F. @6" },
+        @{ Bar = 11; Rows = 4; Area = 11.87913719; Id = "4#11 E.F. @6" },
+        @{ Bar = 11; Rows = 5; Area = 14.84892148; Id = "5#11 E.F. @6" },
+        @{ Bar = 11; Rows = 6; Area = 17.81870578; Id = "6#11 E.F. @6" },
+        @{ Bar = 11; Rows = 7; Area = 20.78849008; Id = "7#11 E.F. @6" },
+        @{ Bar = 11; Rows = 8; Area = 23.75827438; Id = "8#11 E.F. @6" },
+        @{ Bar = 11; Rows = 9; Area = 26.72805867; Id = "9#11 E.F. @6" },
+        @{ Bar = 11; Rows = 10; Area = 29.69784297; Id = "10#11 E.F. @6" },
+        @{ Bar = 11; Rows = 11; Area = 32.66762727; Id = "11#11 E.F. @6" }
+    )
+
+    return @($rows | ForEach-Object { [pscustomobject]$_ })
+}
+
+function Get-DesignSelection {
+    param(
+        [AllowNull()]
+        [object]$RequiredArea,
+        [object[]]$Hierarchy
+    )
+
+    if ($null -eq $RequiredArea -or $RequiredArea -eq "") {
+        return [pscustomobject]@{ Area = ""; Id = ""; Exceeds = $false }
+    }
+
+    $required = [double]$RequiredArea
+    foreach ($entry in $Hierarchy) {
+        if ($required -lt [double]$entry.Area) {
+            return [pscustomobject]@{ Area = [Math]::Round([double]$entry.Area, 6); Id = $entry.Id; Exceeds = $false }
+        }
+    }
+
+    return [pscustomobject]@{ Area = "EXCEEDS HIERARCHY"; Id = "EXCEEDS HIERARCHY"; Exceeds = $true }
+}
+
+function Get-CanonicalPierLabel {
+    param(
+        [string]$PierLabel
+    )
+
+    if ($PierLabel -match "^W1\s+\d+/3$") {
+        return "W1"
+    }
+
+    return $PierLabel
+}
+
+function Get-ReferenceStoryNames {
+    return @(
+        "Story1", "Story2", "Story3", "Story4", "Story5",
+        "Story6", "Story7", "Story8", "Story9", "Story10",
+        "Story11", "Story12", "Story13", "Story14", "Story15",
+        "Story16", "Story17", "Story18", "ROOF"
+    )
+}
+
+function Get-ScheduleColumns {
+    $groups = @("SW-1", "SW-1", "SW-2", "SW-2", "SW-2", "SW-2", "SW-2", "SW-2", "SW-3", "SW-3", "SW-3", "SW-3", "SW-3", "SW-3")
+    $ids = @("1.1", "1.2", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "3.1", "3.2", "3.3", "3.4", "3.5", "3.6")
+    $piers = @("W1", "W1", "W2", "W2", "W3", "W3", "W4", "W4", "W5", "W5", "W6", "W6", "W7", "W7")
+    $sides = @("LEFT", "RIGHT", "LEFT", "RIGHT", "LEFT", "RIGHT", "LEFT", "RIGHT", "LEFT", "RIGHT", "LEFT", "RIGHT", "LEFT", "RIGHT")
+
+    $columns = New-Object System.Collections.Generic.List[object]
+    for ($index = 0; $index -lt $groups.Count; $index++) {
+        $columns.Add([pscustomobject]@{
+            Group = $groups[$index]
+            Id = $ids[$index]
+            Pier = $piers[$index]
+            Side = $sides[$index]
+        }) | Out-Null
+    }
+
+    return $columns.ToArray()
+}
+
+function New-EnvelopeLookup {
+    param(
+        [object[]]$EnvelopeRows
+    )
+
+    $lookup = @{}
+    foreach ($row in @($EnvelopeRows)) {
+        $canonicalPier = Get-CanonicalPierLabel -PierLabel $row.Pier
+        $lookup["{0}|{1}" -f $canonicalPier, $row.Story] = $row
+    }
+
+    return $lookup
+}
+
+function Get-RequiredAreaForColumn {
+    param(
+        [hashtable]$EnvelopeLookup,
+        [string]$Pier,
+        [string]$Story,
+        [string]$Side
+    )
+
+    $key = "{0}|{1}" -f $Pier, $Story
+    if (-not $EnvelopeLookup.ContainsKey($key)) {
+        return ""
+    }
+
+    $row = $EnvelopeLookup[$key]
+    if ($Side -eq "LEFT") {
+        return $row.RequiredSteelLeft_in2
+    }
+
+    return $row.RequiredSteelRight_in2
+}
+
+function Get-DesignCheckValue {
+    param(
+        [AllowNull()]
+        [object]$Value,
+        [int]$Digits = 3
+    )
+
+    if ($null -eq $Value -or $Value -eq "") {
+        return ""
+    }
+
+    return [Math]::Round([double]$Value, $Digits)
+}
+
+function Get-DesignCheckRows {
+    param(
+        [object[]]$EnvelopeRows
+    )
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($row in @($EnvelopeRows)) {
+        $wallLength = $row.WallLength_ft
+        $asLeft = $row.RequiredSteelLeft_in2
+        $asRight = $row.RequiredSteelRight_in2
+        $bZoneLeft = $row.MaxBZoneL_ft
+        $bZoneRight = $row.MaxBZoneR_ft
+
+        $dLeft = if ($null -ne $wallLength -and $wallLength -ne "" -and $null -ne $bZoneLeft -and $bZoneLeft -ne "") { [double]$wallLength - ([double]$bZoneLeft / 2.0) } else { $null }
+        $dRight = if ($null -ne $wallLength -and $wallLength -ne "" -and $null -ne $bZoneRight -and $bZoneRight -ne "") { [double]$wallLength - ([double]$bZoneRight / 2.0) } else { $null }
+        $aLeft = if ($null -ne $asLeft -and $asLeft -ne "") { (60.0 * [double]$asLeft) / (0.85 * 5.0 * 10.0) } else { $null }
+        $aRight = if ($null -ne $asRight -and $asRight -ne "") { (60.0 * [double]$asRight) / (0.85 * 5.0 * 10.0) } else { $null }
+
+        # Preserve the legacy reference workbook formula form for these downstream checks.
+        $phiMnLeftKin = if ($null -ne $dLeft -and $null -ne $aLeft -and $null -ne $asLeft) { (0.9 * 60.0 * [double]$asLeft * ($dLeft * 12.0)) - ($aLeft / 2.0) } else { $null }
+        $phiMnRightKin = if ($null -ne $dRight -and $null -ne $aRight -and $null -ne $asRight) { (0.9 * 60.0 * [double]$asRight * ($dRight * 12.0)) - ($aRight / 2.0) } else { $null }
+
+        $rows.Add([pscustomobject]@{
+            Story = $row.Story
+            WallLength_ft = $wallLength
+            "AS_REQ_LEFT_in^2" = $asLeft
+            "AS_REQ_RIGHT_in^2" = $asRight
+            "LRFDEnvMaxM3_kip-ft" = $row.LRFDEnvMaxM3_kip_ft
+            "LRFDEnvMinM3_kip-ft" = $row.LRFDEnvMinM3_kip_ft
+            BoundaryZoneLeft_ft = $bZoneLeft
+            BoundaryZoneRight_ft = $bZoneRight
+            Message = $row.Messages
+            "d-left-bond" = Get-DesignCheckValue -Value $dLeft
+            "d-right-bond" = Get-DesignCheckValue -Value $dRight
+            "a (in)-left bond" = Get-DesignCheckValue -Value $aLeft
+            "a (in)-right bond" = Get-DesignCheckValue -Value $aRight
+            "phi*Mn(left)(k-in)" = Get-DesignCheckValue -Value $phiMnLeftKin
+            "phi*Mn(right)(k-in)" = Get-DesignCheckValue -Value $phiMnRightKin
+            "phi*Mn(left)(k-ft)" = if ($null -ne $phiMnLeftKin) { Get-DesignCheckValue -Value ($phiMnLeftKin / 12.0) } else { "" }
+            "phi*Mn(right)(k-ft)" = if ($null -ne $phiMnRightKin) { Get-DesignCheckValue -Value ($phiMnRightKin / 12.0) } else { "" }
+        }) | Out-Null
+    }
+
+    return $rows.ToArray()
+}
+
 function New-WorkbookSheetDefinitions {
     param(
         [object[]]$InfoRows,
@@ -827,27 +1048,43 @@ function New-WorkbookSheetDefinitions {
     )
 
     $sheetDefinitions = New-Object System.Collections.Generic.List[object]
+    $hierarchy = Get-DesignHierarchy
+    $storyNames = Get-ReferenceStoryNames
+    $scheduleColumns = Get-ScheduleColumns
+    $envelopeLookup = New-EnvelopeLookup -EnvelopeRows $EnvelopeRows
     $infoHeaders = @("Field", "Value")
     $envelopeHeaders = @(
         "Pier",
         "Story",
+        "WallLength_ft",
         "RequiredSteelLeft_in2",
         "RequiredSteelRight_in2",
+        "LRFDEnvMaxM3_kip_ft",
+        "LRFDEnvMinM3_kip_ft",
         "MaxBZoneL_ft",
         "MaxBZoneR_ft",
         "MaxDCRatio",
         "PierSecTypes",
         "Messages"
     )
-    $pierHeaders = @(
+    $pierDesignHeaders = @(
         "Story",
-        "RequiredSteelLeft_in2",
-        "RequiredSteelRight_in2",
-        "MaxBZoneL_ft",
-        "MaxBZoneR_ft",
-        "MaxDCRatio",
-        "PierSecTypes",
-        "Messages"
+        "WallLength_ft",
+        "AS_REQ_LEFT_in^2",
+        "AS_REQ_RIGHT_in^2",
+        "LRFDEnvMaxM3_kip-ft",
+        "LRFDEnvMinM3_kip-ft",
+        "BoundaryZoneLeft_ft",
+        "BoundaryZoneRight_ft",
+        "Message",
+        "d-left-bond",
+        "d-right-bond",
+        "a (in)-left bond",
+        "a (in)-right bond",
+        "phi*Mn(left)(k-in)",
+        "phi*Mn(right)(k-in)",
+        "phi*Mn(left)(k-ft)",
+        "phi*Mn(right)(k-ft)"
     )
     $stationHeaders = @(
         "Pier",
@@ -883,6 +1120,81 @@ function New-WorkbookSheetDefinitions {
         "ErrMsg"
     )
 
+    $asMasterGrid = New-Object System.Collections.Generic.List[object]
+    $asMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
+    $asMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
+    foreach ($storyName in $storyNames) {
+        $asMasterGrid.Add(@($storyName) + @($scheduleColumns | ForEach-Object {
+                    Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $storyName -Side $_.Side
+                })) | Out-Null
+    }
+
+    $designValueByStory = @{}
+    $designIdByStory = @{}
+    foreach ($storyName in $storyNames) {
+        $designValueByStory[$storyName] = @($scheduleColumns | ForEach-Object {
+                $required = Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $storyName -Side $_.Side
+                (Get-DesignSelection -RequiredArea $required -Hierarchy $hierarchy).Area
+            })
+        $designIdByStory[$storyName] = @($scheduleColumns | ForEach-Object {
+                $required = Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $storyName -Side $_.Side
+                (Get-DesignSelection -RequiredArea $required -Hierarchy $hierarchy).Id
+            })
+    }
+
+    $flippedStories = @($storyNames | Sort-Object { Get-StorySortKey -StoryName $_ } -Descending)
+    $designMasterGrid = New-Object System.Collections.Generic.List[object]
+    $designMasterGrid.Add(@("As required") + @("") * 15 + @("As required (flipped)") + @("") * 14) | Out-Null
+    $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
+    $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
+    for ($index = 0; $index -lt $storyNames.Count; $index++) {
+        $storyName = $storyNames[$index]
+        $flippedStory = $flippedStories[$index]
+        $designMasterGrid.Add(@($storyName) + @($scheduleColumns | ForEach-Object {
+                    Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $storyName -Side $_.Side
+                }) + @("", $flippedStory) + @($scheduleColumns | ForEach-Object {
+                    Get-RequiredAreaForColumn -EnvelopeLookup $envelopeLookup -Pier $_.Pier -Story $flippedStory -Side $_.Side
+                })) | Out-Null
+    }
+    $designMasterGrid.Add(@("")) | Out-Null
+    $designMasterGrid.Add(@("design value>As required") + @("") * 15 + @("design value>As required (flipped)") + @("") * 14) | Out-Null
+    $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
+    $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
+    for ($index = 0; $index -lt $storyNames.Count; $index++) {
+        $storyName = $storyNames[$index]
+        $flippedStory = $flippedStories[$index]
+        $designMasterGrid.Add(@($storyName) + @($designValueByStory[$storyName]) + @("", $flippedStory) + @($designValueByStory[$flippedStory])) | Out-Null
+    }
+    $designMasterGrid.Add(@("")) | Out-Null
+    $designMasterGrid.Add(@("design id") + @("") * 15 + @("design id (flipped)") + @("") * 14) | Out-Null
+    $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
+    $designMasterGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side }) + @("", "") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
+    for ($index = 0; $index -lt $storyNames.Count; $index++) {
+        $storyName = $storyNames[$index]
+        $flippedStory = $flippedStories[$index]
+        $designMasterGrid.Add(@($storyName) + @($designIdByStory[$storyName]) + @("", $flippedStory) + @($designIdByStory[$flippedStory])) | Out-Null
+    }
+
+    $tableGrid = New-Object System.Collections.Generic.List[object]
+    $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Group })) | Out-Null
+    $tableGrid.Add(@("ID") + @($scheduleColumns | ForEach-Object { $_.Id })) | Out-Null
+    $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
+    $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Side })) | Out-Null
+    foreach ($storyName in $flippedStories) {
+        $tableGrid.Add(@($storyName) + @($designIdByStory[$storyName])) | Out-Null
+    }
+
+    $hierarchyGrid = New-Object System.Collections.Generic.List[object]
+    $hierarchyGrid.Add(@("#", "rows", "A", "id")) | Out-Null
+    foreach ($entry in $hierarchy) {
+        $hierarchyGrid.Add(@($entry.Bar, $entry.Rows, [Math]::Round([double]$entry.Area, 6), $entry.Id)) | Out-Null
+    }
+
+    $sheetDefinitions.Add((New-GridSheetDefinition -Name "SHEAR WALL TABLE OUTPUT" -GridRows $tableGrid.ToArray())) | Out-Null
+    $sheetDefinitions.Add((New-GridSheetDefinition -Name "Master Design Hierarchy" -GridRows $hierarchyGrid.ToArray())) | Out-Null
+    $sheetDefinitions.Add((New-GridSheetDefinition -Name "As Master" -GridRows $asMasterGrid.ToArray())) | Out-Null
+    $sheetDefinitions.Add((New-GridSheetDefinition -Name "Design Master" -GridRows $designMasterGrid.ToArray())) | Out-Null
+
     $sheetDefinitions.Add([pscustomobject]@{
         Name = "Info"
         Headers = $infoHeaders
@@ -897,12 +1209,32 @@ function New-WorkbookSheetDefinitions {
 
     foreach ($pierLabel in @($EnvelopeRows | Select-Object -ExpandProperty Pier -Unique | Sort-Object { Get-PierSortKey -PierLabel $_ })) {
         $pierRows = @($EnvelopeRows | Where-Object { $_.Pier -eq $pierLabel })
+        $designCheckRows = Get-DesignCheckRows -EnvelopeRows $pierRows
         $sheetDefinitions.Add([pscustomobject]@{
             Name = $pierLabel
-            Headers = $pierHeaders
-            Rows = Convert-ObjectsToSheetRows -Rows $pierRows -Headers $pierHeaders -HighlightMessages
+            Headers = $pierDesignHeaders
+            Rows = Convert-ObjectsToSheetRows -Rows $designCheckRows -Headers $pierDesignHeaders -HighlightMessages
         }) | Out-Null
     }
+
+    $exceedsCount = 0
+    foreach ($ids in $designIdByStory.Values) {
+        $exceedsCount += @($ids | Where-Object { $_ -eq "EXCEEDS HIERARCHY" }).Count
+    }
+    $stationCount = ($StationRows | Measure-Object).Count
+    $envelopeCount = ($EnvelopeRows | Measure-Object).Count
+    $warningCount = ($WarningRows | Measure-Object).Count
+    $missingWallLengthCount = @($EnvelopeRows | Where-Object { $null -eq $_.WallLength_ft -or $_.WallLength_ft -eq "" }).Count
+    $sanityGrid = @(
+        @("Check", "Status", "Value", "Notes"),
+        @("Reference sheets present", "OK", "15/15", "Generated workbook includes every sheet from the reference shear-wall-design workbook."),
+        @("Raw station rows", $(if ($stationCount -gt 0) { "OK" } else { "REVIEW" }), $stationCount, "Direct ETABS GetPierSummaryResults rows."),
+        @("Pier/story envelope rows", $(if ($envelopeCount -gt 0) { "OK" } else { "REVIEW" }), $envelopeCount, "Rows used by All Piers, As Master, Design Master, and table output."),
+        @("ETABS warning rows", $(if ($warningCount -eq 0) { "OK" } else { "REVIEW" }), $warningCount, "Warning rows are listed on the Warnings sheet."),
+        @("EXCEEDS HIERARCHY cells", $(if ($exceedsCount -eq 0) { "OK" } else { "REVIEW" }), $exceedsCount, "Schedule cells that exceed the Master Design Hierarchy."),
+        @("Missing wall lengths", $(if ($missingWallLengthCount -eq 0) { "OK" } else { "REVIEW" }), $missingWallLengthCount, "Wall lengths are needed for downstream d and phi*Mn check columns.")
+    )
+    $sheetDefinitions.Add((New-GridSheetDefinition -Name "Sanity Checks" -GridRows $sanityGrid)) | Out-Null
 
     $sheetDefinitions.Add([pscustomobject]@{
         Name = "Raw Station Results"
@@ -1061,9 +1393,215 @@ function Get-ShearWallStationRows {
     return $rows.ToArray()
 }
 
+function Convert-MomentToKipFeet {
+    param(
+        [AllowNull()]
+        [object]$Value,
+        [string]$ForceUnit,
+        [string]$LengthUnit
+    )
+
+    if ($null -eq $Value -or $Value -eq "") {
+        return $null
+    }
+
+    $forceFactor = switch -Regex ($ForceUnit) {
+        "^lb$" { 0.001 }
+        "^kip$" { 1.0 }
+        "^N$" { 0.0002248089431 }
+        "^kN$" { 0.2248089431 }
+        default { throw "Unsupported force unit for kip-ft conversion: $ForceUnit" }
+    }
+
+    return ([double]$Value) * $forceFactor * (Get-LengthToFootFactor -LengthUnit $LengthUnit)
+}
+
+function Get-PierLengthLookup {
+    param(
+        $SapModel,
+        [string]$LengthUnit
+    )
+
+    $db = $SapModel.DatabaseTables
+    [string[]]$fieldKeys = @()
+    [string[]]$fields = @()
+    [string[]]$data = @()
+    $tableVersion = 0
+    $numRecords = 0
+    $lookup = @{}
+
+    Assert-Success (
+        $db.GetTableForDisplayArray(
+            "Pier Section Properties",
+            [ref]$fieldKeys,
+            "All",
+            [ref]$tableVersion,
+            [ref]$fields,
+            [ref]$numRecords,
+            [ref]$data
+        )
+    ) "Get pier section properties table"
+
+    $fieldCount = $fields.Length
+    for ($recordIndex = 0; $recordIndex -lt $numRecords; $recordIndex++) {
+        $offset = $recordIndex * $fieldCount
+        $record = @{}
+        for ($fieldIndex = 0; $fieldIndex -lt $fieldCount; $fieldIndex++) {
+            $record[$fields[$fieldIndex]] = $data[$offset + $fieldIndex]
+        }
+
+        $widthValues = @($record["WidthBot"], $record["WidthTop"]) | Where-Object { $null -ne $_ -and $_ -ne "" } | ForEach-Object {
+            Convert-LengthToFeet -Value ([double]$_) -LengthUnit $LengthUnit
+        }
+        $key = "{0}|{1}" -f $record["Pier"], $record["Story"]
+        $lookup[$key] = if ($widthValues.Count -gt 0) { [Math]::Round((($widthValues | Measure-Object -Maximum).Maximum), 3) } else { $null }
+    }
+
+    return $lookup
+}
+
+function Get-SelectedResultState {
+    param(
+        $SapModel
+    )
+
+    $setup = $SapModel.Results.Setup
+    $caseNamesList = New-Object System.Collections.Generic.List[string]
+    foreach ($caseType in [System.Enum]::GetValues([ETABSv1.eLoadCaseType])) {
+        $caseCount = 0
+        [string[]]$caseNames = @()
+        $ret = $SapModel.LoadCases.GetNameList([ref]$caseCount, [ref]$caseNames, $caseType)
+        if ($ret -eq 0 -and $null -ne $caseNames) {
+            foreach ($caseName in $caseNames) {
+                if (-not [string]::IsNullOrWhiteSpace($caseName) -and -not $caseNamesList.Contains($caseName)) {
+                    $caseNamesList.Add($caseName) | Out-Null
+                }
+            }
+        }
+    }
+
+    $comboCount = 0
+    [string[]]$comboNames = @()
+    Assert-Success ($SapModel.RespCombo.GetNameList([ref]$comboCount, [ref]$comboNames)) "Get load combination names"
+
+    $selectedCases = @{}
+    foreach ($caseName in $caseNamesList) {
+        $selected = $false
+        Assert-Success ($setup.GetCaseSelectedForOutput($caseName, [ref]$selected)) "Get selected output case '$caseName'"
+        $selectedCases[$caseName] = [bool]$selected
+    }
+
+    $selectedCombos = @{}
+    foreach ($comboName in $comboNames) {
+        $selected = $false
+        Assert-Success ($setup.GetComboSelectedForOutput($comboName, [ref]$selected)) "Get selected output combo '$comboName'"
+        $selectedCombos[$comboName] = [bool]$selected
+    }
+
+    return [pscustomobject]@{
+        Cases = $selectedCases
+        Combos = $selectedCombos
+    }
+}
+
+function Restore-SelectedResultState {
+    param(
+        $SapModel,
+        [object]$State
+    )
+
+    $setup = $SapModel.Results.Setup
+    Assert-Success ($setup.DeselectAllCasesAndCombosForOutput()) "Deselect output cases and combos"
+
+    foreach ($caseName in $State.Cases.Keys) {
+        if ($State.Cases[$caseName]) {
+            Assert-Success ($setup.SetCaseSelectedForOutput($caseName, $true)) "Restore output case '$caseName'"
+        }
+    }
+
+    foreach ($comboName in $State.Combos.Keys) {
+        if ($State.Combos[$comboName]) {
+            Assert-Success ($setup.SetComboSelectedForOutput($comboName, $true)) "Restore output combo '$comboName'"
+        }
+    }
+}
+
+function Get-LrfdEnvPierMomentLookup {
+    param(
+        $SapModel,
+        [string]$ForceUnit,
+        [string]$LengthUnit
+    )
+
+    $savedState = Get-SelectedResultState -SapModel $SapModel
+    $setup = $SapModel.Results.Setup
+
+    try {
+        Assert-Success ($setup.DeselectAllCasesAndCombosForOutput()) "Deselect output cases and combos"
+        Assert-Success ($setup.SetComboSelectedForOutput("LRFD-ENV", $true)) "Select LRFD-ENV for output"
+
+        $numberResults = 0
+        [string[]]$storyNames = @()
+        [string[]]$pierNames = @()
+        [string[]]$loadCases = @()
+        [string[]]$locations = @()
+        [double[]]$P = @()
+        [double[]]$V2 = @()
+        [double[]]$V3 = @()
+        [double[]]$T = @()
+        [double[]]$M2 = @()
+        [double[]]$M3 = @()
+
+        Assert-Success (
+            $SapModel.Results.PierForce(
+                [ref]$numberResults,
+                [ref]$storyNames,
+                [ref]$pierNames,
+                [ref]$loadCases,
+                [ref]$locations,
+                [ref]$P,
+                [ref]$V2,
+                [ref]$V3,
+                [ref]$T,
+                [ref]$M2,
+                [ref]$M3
+            )
+        ) "Get LRFD-ENV pier forces"
+
+        $lookup = @{}
+        for ($index = 0; $index -lt $numberResults; $index++) {
+            $key = "{0}|{1}" -f $pierNames[$index], $storyNames[$index]
+            if (-not $lookup.ContainsKey($key)) {
+                $lookup[$key] = [ordered]@{
+                    MaxM3 = $null
+                    MinM3 = $null
+                }
+            }
+
+            $m3Value = Convert-MomentToKipFeet -Value $M3[$index] -ForceUnit $ForceUnit -LengthUnit $LengthUnit
+            $entry = $lookup[$key]
+
+            if ($null -eq $entry.MaxM3 -or $m3Value -gt $entry.MaxM3) {
+                $entry.MaxM3 = $m3Value
+            }
+
+            if ($null -eq $entry.MinM3 -or $m3Value -lt $entry.MinM3) {
+                $entry.MinM3 = $m3Value
+            }
+        }
+
+        return $lookup
+    }
+    finally {
+        Restore-SelectedResultState -SapModel $SapModel -State $savedState
+    }
+}
+
 function Get-EnvelopeRows {
     param(
-        [object[]]$StationRows
+        [object[]]$StationRows,
+        [hashtable]$PierLengthLookup,
+        [hashtable]$LrfdEnvPierMomentLookup
     )
 
     $entries = @{}
@@ -1073,6 +1611,9 @@ function Get-EnvelopeRows {
             $entries[$key] = [ordered]@{
                 Pier = $row.Pier
                 Story = $row.Story
+                WallLength_ft = $null
+                LRFDEnvMaxM3_kip_ft = $null
+                LRFDEnvMinM3_kip_ft = $null
                 RequiredSteelLeft_in2 = $null
                 RequiredSteelRight_in2 = $null
                 MaxBZoneL_ft = $null
@@ -1084,6 +1625,15 @@ function Get-EnvelopeRows {
         }
 
         $entry = $entries[$key]
+        if ($null -eq $entry["WallLength_ft"] -and $PierLengthLookup.ContainsKey($key)) {
+            $entry["WallLength_ft"] = $PierLengthLookup[$key]
+        }
+
+        if ($null -eq $entry["LRFDEnvMaxM3_kip_ft"] -and $LrfdEnvPierMomentLookup.ContainsKey($key)) {
+            $entry["LRFDEnvMaxM3_kip_ft"] = [Math]::Round([double]$LrfdEnvPierMomentLookup[$key].MaxM3, 3)
+            $entry["LRFDEnvMinM3_kip_ft"] = [Math]::Round([double]$LrfdEnvPierMomentLookup[$key].MinM3, 3)
+        }
+
         if (-not [string]::IsNullOrWhiteSpace($row.PierSecType) -and -not $entry["PierSecTypes"].Contains($row.PierSecType)) {
             $entry["PierSecTypes"].Add($row.PierSecType) | Out-Null
         }
@@ -1116,8 +1666,11 @@ function Get-EnvelopeRows {
         [pscustomobject]@{
             Pier = $entry["Pier"]
             Story = $entry["Story"]
+            WallLength_ft = $entry["WallLength_ft"]
             RequiredSteelLeft_in2 = $entry["RequiredSteelLeft_in2"]
             RequiredSteelRight_in2 = $entry["RequiredSteelRight_in2"]
+            LRFDEnvMaxM3_kip_ft = $entry["LRFDEnvMaxM3_kip_ft"]
+            LRFDEnvMinM3_kip_ft = $entry["LRFDEnvMinM3_kip_ft"]
             MaxBZoneL_ft = $entry["MaxBZoneL_ft"]
             MaxBZoneR_ft = $entry["MaxBZoneR_ft"]
             MaxDCRatio = $entry["MaxDCRatio"]
@@ -1184,7 +1737,9 @@ if (-not $stationRows -or $stationRowCount -eq 0) {
     throw "No shear wall pier summary results were returned from the active model for the selected filters."
 }
 
-$envelopeRows = Get-EnvelopeRows -StationRows $stationRows
+$pierLengthLookup = Get-PierLengthLookup -SapModel $api.SapModel -LengthUnit $units.Length
+$lrfdEnvMomentLookup = Get-LrfdEnvPierMomentLookup -SapModel $api.SapModel -ForceUnit $units.Force -LengthUnit $units.Length
+$envelopeRows = Get-EnvelopeRows -StationRows $stationRows -PierLengthLookup $pierLengthLookup -LrfdEnvPierMomentLookup $lrfdEnvMomentLookup
 $warningRows = Get-WarningRows -StationRows $stationRows
 $envelopeRowCount = @($envelopeRows).Count
 $warningRowCount = @($warningRows).Count

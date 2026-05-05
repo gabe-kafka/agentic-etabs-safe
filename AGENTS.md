@@ -37,7 +37,7 @@ Do not recreate `sessions/`, `templates/`, `PLAN.md`, or `README.md` unless the 
 
 - Use `scripts/export-etabs-shear-wall-required-steel-pipeline.ps1` for future shear wall required steel pulls.
 - Treat `SapModel.DesignShearWall.GetPierSummaryResults` as the source of truth for pier required steel.
-- Output a parallel shear-wall design XLSX workbook as the workflow deliverable, with raw Top/Bottom station rows and a pier/story required steel envelope.
+- Output a parallel shear-wall design XLSX workbook as the workflow deliverable, including the reference downstream sheets, schedule table output, sanity checks, design checks, raw Top/Bottom station rows, and a pier/story required steel envelope.
 - Do not treat an existing Excel design workbook as current unless its metadata matches the live ETABS model path and model save time.
 - If a workbook and ETABS disagree, re-pull from the live model before changing schedule/design values.
 - For downstream SAFE or schedule work, use the pipeline workbook as the handoff artifact instead of copying values from a stale open workbook.

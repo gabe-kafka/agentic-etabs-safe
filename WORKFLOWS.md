@@ -36,9 +36,14 @@ Outputs:
 
 Workbook tabs:
 
+- `SHEAR WALL TABLE OUTPUT`: final schedule-style design table.
+- `Master Design Hierarchy`: required steel area hierarchy used for schedule selection.
+- `As Master`: required steel by story, pier, and side.
+- `Design Master`: required steel, selected design values, selected design IDs, and flipped story order table.
 - `Info`: model path, save time, units, source API, row counts, output path, and envelope rule.
 - `All Piers`: pier/story required steel envelope.
 - Per-pier tabs such as `W4`: same envelope data filtered to one pier.
+- `Sanity Checks`: row counts, warning count, hierarchy exceedance count, and missing wall length checks.
 - `Raw Station Results`: direct ETABS Top/Bottom station rows from `SapModel.DesignShearWall.GetPierSummaryResults`.
 - `Warnings`: ETABS warning/error rows from the live design summary.
 
