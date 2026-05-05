@@ -794,6 +794,40 @@ workbook.save(path)
     }
 }
 
+function Invoke-ExcelCalculateWorkbook {
+    param(
+        [string]$Path
+    )
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    $pythonCode = @'
+import sys
+import time
+from pathlib import Path
+
+import win32com.client.dynamic
+
+path = Path(sys.argv[1])
+excel = win32com.client.dynamic.Dispatch("Excel.Application")
+excel.DisplayAlerts = False
+excel.Visible = False
+try:
+    workbook = excel.Workbooks.Open(str(path), UpdateLinks=0, ReadOnly=False)
+    excel.Calculation = -4105  # xlCalculationAutomatic
+    excel.CalculateFullRebuild()
+    time.sleep(0.5)
+    workbook.Save()
+    workbook.Close(SaveChanges=True)
+finally:
+    excel.Quit()
+'@
+
+    $pythonCode | & python - $resolvedPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python/Excel failed while calculating the workbook."
+    }
+}
+
 function Invoke-WorkbookQaQcAlignment {
     param(
         [string]$Path,
@@ -1268,7 +1302,7 @@ function New-RequiredSteelFormula {
         $pierPredicate = '{0}="{1}"' -f $pierRange, $criteria
     }
     $storyPredicate = "{0}={1}" -f $storyRange, $StoryCellReference
-    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",IFERROR(AGGREGATE(14,6,{2}/(({0})*({1})),1),""))' -f $pierPredicate, $storyPredicate, $valueRange
+    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",MAX(INDEX(({0})*({1})*{2},0)))' -f $pierPredicate, $storyPredicate, $valueRange
 }
 
 function New-DesignValueFormula {
@@ -1443,6 +1477,32 @@ function Get-ReferenceStoryNames {
     )
 }
 
+function Get-ProjectDisplayName {
+    param(
+        [object[]]$InfoRows
+    )
+
+    $modelPath = ""
+    foreach ($row in @($InfoRows)) {
+        if ($row.Field -eq "ModelPath") {
+            $modelPath = [string]$row.Value
+            break
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($modelPath)) {
+        return "shear wall design - ETABS output"
+    }
+
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($modelPath)
+    $projectName = ($baseName -split "\s+-\s+")[0].Trim()
+    if ([string]::IsNullOrWhiteSpace($projectName)) {
+        $projectName = $baseName.Trim()
+    }
+
+    return ("{0} - shear wall design - ETABS output" -f $projectName).ToLowerInvariant()
+}
+
 function Get-ScheduleColumns {
     $groups = @("SW-1", "SW-1", "SW-2", "SW-2", "SW-2", "SW-2", "SW-2", "SW-2", "SW-3", "SW-3", "SW-3", "SW-3", "SW-3", "SW-3")
     $ids = @("1.1", "1.2", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "3.1", "3.2", "3.3", "3.4", "3.5", "3.6")
@@ -1540,16 +1600,10 @@ function New-CountedAggregateFormula {
     )
 
     $criteria = ConvertTo-ExcelStringLiteral -Value $PierCriteria
-    $aggregateIndex = switch ($AggregateFunction.ToUpperInvariant()) {
-        "MINIFS" { 15 }
-        default { 14 }
-    }
     $pierRange = "{0}!`$A`$2:`$A`${1}" -f $SourceSheet, $LastDataRow
     $storyRange = "{0}!`$B`$2:`$B`${1}" -f $SourceSheet, $LastDataRow
     $valueRange = "{0}!`${1}`$2:`${1}`${2}" -f $SourceSheet, $ValueColumn, $LastDataRow
-    $pierPredicate = '{0}="{1}"' -f $pierRange, $criteria
-    $storyPredicate = "{0}={1}" -f $storyRange, $StoryCellReference
-    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",IFERROR(AGGREGATE({2},6,{3}/(({0})*({1})),1),""))' -f $pierPredicate, $storyPredicate, $aggregateIndex, $valueRange
+    return '=IF(COUNTIFS({0},"{1}",{2},{3})=0,"",SUMIFS({4},{0},"{1}",{2},{3}))' -f $pierRange, $criteria, $storyRange, $StoryCellReference, $valueRange
 }
 
 function New-CellCriteriaAggregateFormula {
@@ -1562,16 +1616,12 @@ function New-CellCriteriaAggregateFormula {
         [int]$LastDataRow
     )
 
-    $aggregateIndex = switch ($AggregateFunction.ToUpperInvariant()) {
-        "MINIFS" { 15 }
-        default { 14 }
-    }
     $pierRange = "{0}!`$A`$2:`$A`${1}" -f $SourceSheet, $LastDataRow
     $storyRange = "{0}!`$B`$2:`$B`${1}" -f $SourceSheet, $LastDataRow
     $valueRange = "{0}!`${1}`$2:`${1}`${2}" -f $SourceSheet, $ValueColumn, $LastDataRow
     $pierPredicate = "{0}={1}" -f $pierRange, $PierCellReference
     $storyPredicate = "{0}={1}" -f $storyRange, $StoryCellReference
-    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",IFERROR(AGGREGATE({2},6,{3}/(({0})*({1})),1),""))' -f $pierPredicate, $storyPredicate, $aggregateIndex, $valueRange
+    return '=IF(SUMPRODUCT(--({0}),--({1}))=0,"",MAX(INDEX(({0})*({1})*{2},0)))' -f $pierPredicate, $storyPredicate, $valueRange
 }
 
 function Get-DesignCheckRows {
@@ -1637,6 +1687,7 @@ function New-WorkbookSheetDefinitions {
     $storyNames = Get-ReferenceStoryNames
     $scheduleColumns = Get-ScheduleColumns
     $envelopeLookup = New-EnvelopeLookup -EnvelopeRows $EnvelopeRows
+    $projectDisplayName = Get-ProjectDisplayName -InfoRows $InfoRows
     $lastRawStationDataRow = [Math]::Max(2, (($StationRows | Measure-Object).Count + 1))
     $lastAllPiersDataRow = [Math]::Max(2, (($EnvelopeRows | Measure-Object).Count + 1))
     $infoHeaders = @("Field", "Value")
@@ -1750,6 +1801,7 @@ function New-WorkbookSheetDefinitions {
     $dmRequiredFirstRow = 4
     $dmDesignValueFirstRow = $dmRequiredFirstRow + $storyNames.Count + 4
     $dmDesignIdFirstRow = $dmDesignValueFirstRow + $storyNames.Count + 4
+    $tableFirstStoryRow = 6
     $dmIdRowByStory = @{}
     for ($index = 0; $index -lt $storyNames.Count; $index++) {
         $dmIdRowByStory[$storyNames[$index]] = $dmDesignIdFirstRow + $index
@@ -1809,6 +1861,7 @@ function New-WorkbookSheetDefinitions {
     }
 
     $tableGrid = New-Object System.Collections.Generic.List[object]
+    $tableGrid.Add(@($projectDisplayName) + @("") * $scheduleColumns.Count) | Out-Null
     $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Group })) | Out-Null
     $tableGrid.Add(@("ID") + @($scheduleColumns | ForEach-Object { $_.Id })) | Out-Null
     $tableGrid.Add(@("") + @($scheduleColumns | ForEach-Object { $_.Pier })) | Out-Null
@@ -2442,6 +2495,7 @@ $qaQcPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "qa-qc-alignment
 $sheetDefinitions = New-WorkbookSheetDefinitions -InfoRows $infoRows -EnvelopeRows $envelopeRows -StationRows $stationRows -WarningRows $warningRows
 Write-XlsxWorkbook -Path $resolvedOutputWorkbookPath -SheetDefinitions $sheetDefinitions
 $qaQcSummary = Invoke-WorkbookQaQcAlignment -Path $resolvedOutputWorkbookPath -SheetDefinitions $sheetDefinitions -StationRows $stationRows -EnvelopeRows $envelopeRows -ToleranceIn2 $QaToleranceIn2 -CsvPath $(if ($NoCsv) { $null } else { $qaQcPath })
+Invoke-ExcelCalculateWorkbook -Path $resolvedOutputWorkbookPath
 
 if (-not $NoCsv) {
     Export-Rows -Path $infoPath -Rows $infoRows
