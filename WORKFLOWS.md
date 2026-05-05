@@ -37,7 +37,7 @@ Outputs:
 Workbook tabs:
 
 - `Info`: model path, save time, units, source API, row counts, output path, and envelope rule.
-- `All Piers`: pier/story required steel envelope with controlling station columns.
+- `All Piers`: pier/story required steel envelope.
 - Per-pier tabs such as `W4`: same envelope data filtered to one pier.
 - `Raw Station Results`: direct ETABS Top/Bottom station rows from `SapModel.DesignShearWall.GetPierSummaryResults`.
 - `Warnings`: ETABS warning/error rows from the live design summary.

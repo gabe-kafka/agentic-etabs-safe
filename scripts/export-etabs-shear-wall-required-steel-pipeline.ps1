@@ -424,6 +424,32 @@ function Get-CellXml {
     return '<c r="{0}" t="inlineStr" s="{1}"><is><t>{2}</t></is></c>' -f $CellReference, $StyleId, (Escape-Xml -Value $Value)
 }
 
+function Get-CellDisplayText {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return ""
+    }
+
+    if ($Value -is [double] -or $Value -is [float] -or $Value -is [decimal]) {
+        return ("{0:N3}" -f $Value)
+    }
+
+    return [string]$Value
+}
+
+function Get-AutoColumnWidth {
+    param(
+        [int]$MaxTextLength
+    )
+
+    $paddedWidth = [Math]::Ceiling(($MaxTextLength * 1.08) + 2)
+    return [Math]::Min([Math]::Max($paddedWidth, 8), 120)
+}
+
 function Get-WorksheetXml {
     param(
         [string[]]$Headers,
@@ -435,28 +461,21 @@ function Get-WorksheetXml {
         $maxLength = ([string]$Headers[$columnIndex]).Length
         foreach ($row in @($Rows)) {
             $value = $row.Cells[$columnIndex]
-            if ($null -eq $value) {
-                $text = ""
-            }
-            elseif ($value -is [double] -or $value -is [float] -or $value -is [decimal]) {
-                $text = ("{0:N3}" -f $value)
-            }
-            else {
-                $text = [string]$value
-            }
-
-            if ($text.Length -gt $maxLength) {
-                $maxLength = $text.Length
+            $text = Get-CellDisplayText -Value $value
+            foreach ($line in ($text -split "(\r\n|\n|\r)")) {
+                if ($line.Length -gt $maxLength) {
+                    $maxLength = $line.Length
+                }
             }
         }
 
-        $widths.Add([Math]::Min($maxLength + 2, 80)) | Out-Null
+        $widths.Add((Get-AutoColumnWidth -MaxTextLength $maxLength)) | Out-Null
     }
 
     $columnXml = New-Object System.Collections.Generic.List[string]
     for ($index = 1; $index -le $Headers.Length; $index++) {
         $width = $widths[$index - 1]
-        $columnXml.Add(('<col min="{0}" max="{0}" width="{1}" customWidth="1"/>' -f $index, $width)) | Out-Null
+        $columnXml.Add(('<col min="{0}" max="{0}" width="{1}" customWidth="1" bestFit="1"/>' -f $index, $width)) | Out-Null
     }
 
     $rowsXml = New-Object System.Collections.Generic.List[string]
@@ -770,11 +789,7 @@ function New-WorkbookSheetDefinitions {
         "Pier",
         "Story",
         "RequiredSteelLeft_in2",
-        "LeftControlStation",
-        "LeftControlPierLeg",
         "RequiredSteelRight_in2",
-        "RightControlStation",
-        "RightControlPierLeg",
         "MaxBZoneL_ft",
         "MaxBZoneR_ft",
         "MaxDCRatio",
@@ -785,11 +800,7 @@ function New-WorkbookSheetDefinitions {
     $pierHeaders = @(
         "Story",
         "RequiredSteelLeft_in2",
-        "LeftControlStation",
-        "LeftControlPierLeg",
         "RequiredSteelRight_in2",
-        "RightControlStation",
-        "RightControlPierLeg",
         "MaxBZoneL_ft",
         "MaxBZoneR_ft",
         "MaxDCRatio",
@@ -1024,11 +1035,7 @@ function Get-EnvelopeRows {
                 Pier = $row.Pier
                 Story = $row.Story
                 RequiredSteelLeft_in2 = $null
-                LeftControlStation = ""
-                LeftControlPierLeg = ""
                 RequiredSteelRight_in2 = $null
-                RightControlStation = ""
-                RightControlPierLeg = ""
                 MaxBZoneL_ft = $null
                 MaxBZoneR_ft = $null
                 MaxDCRatio = $null
@@ -1052,14 +1059,10 @@ function Get-EnvelopeRows {
 
         if ($null -ne $row.AsLeft_in2 -and ($null -eq $entry["RequiredSteelLeft_in2"] -or $row.AsLeft_in2 -gt $entry["RequiredSteelLeft_in2"])) {
             $entry["RequiredSteelLeft_in2"] = $row.AsLeft_in2
-            $entry["LeftControlStation"] = $row.Station
-            $entry["LeftControlPierLeg"] = $row.PierLeg
         }
 
         if ($null -ne $row.AsRight_in2 -and ($null -eq $entry["RequiredSteelRight_in2"] -or $row.AsRight_in2 -gt $entry["RequiredSteelRight_in2"])) {
             $entry["RequiredSteelRight_in2"] = $row.AsRight_in2
-            $entry["RightControlStation"] = $row.Station
-            $entry["RightControlPierLeg"] = $row.PierLeg
         }
 
         if ($null -ne $row.BZoneL_ft -and ($null -eq $entry["MaxBZoneL_ft"] -or $row.BZoneL_ft -gt $entry["MaxBZoneL_ft"])) {
@@ -1080,11 +1083,7 @@ function Get-EnvelopeRows {
             Pier = $entry["Pier"]
             Story = $entry["Story"]
             RequiredSteelLeft_in2 = $entry["RequiredSteelLeft_in2"]
-            LeftControlStation = $entry["LeftControlStation"]
-            LeftControlPierLeg = $entry["LeftControlPierLeg"]
             RequiredSteelRight_in2 = $entry["RequiredSteelRight_in2"]
-            RightControlStation = $entry["RightControlStation"]
-            RightControlPierLeg = $entry["RightControlPierLeg"]
             MaxBZoneL_ft = $entry["MaxBZoneL_ft"]
             MaxBZoneR_ft = $entry["MaxBZoneR_ft"]
             MaxDCRatio = $entry["MaxDCRatio"]
@@ -1176,7 +1175,7 @@ $infoRows = @(
     [pscustomobject]@{ Field = "StoryEnvelopeRowCount"; Value = $envelopeRowCount },
     [pscustomobject]@{ Field = "WarningRowCount"; Value = $warningRowCount },
     [pscustomobject]@{ Field = "Source"; Value = "SapModel.DesignShearWall.GetPierSummaryResults" },
-    [pscustomobject]@{ Field = "EnvelopeRule"; Value = "Per pier/story, use max AsLeft and max AsRight across ETABS station rows; keep controlling station columns." }
+    [pscustomobject]@{ Field = "EnvelopeRule"; Value = "Per pier/story, use max AsLeft and max AsRight across ETABS station rows." }
 )
 
 $infoPath = Join-Path -Path $resolvedOutputDirectory -ChildPath "info.csv"
