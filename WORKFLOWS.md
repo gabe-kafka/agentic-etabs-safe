@@ -129,9 +129,50 @@ Hard requirement:
 - Prefer modifying/copying the template table so font, table style, borders, row heights, merged cells, and notes are preserved.
 - Automate bond-zone filling only. Balance-zone cells can remain blank or as preserved template content unless explicitly requested.
 
-Recommended loop:
+Locked build method:
 
-1. Generate a blank/scaled editable AutoCAD table object.
-2. Verify the DXF contains an `ACAD_TABLE`.
-3. Review row/column geometry in AutoCAD.
-4. Fill reinforcement from `SHEAR WALL TABLE OUTPUT` only after the blank table is accepted.
+1. Use `C:\Users\gkafka\Documents\table-template.dxf` as the table source.
+2. Open the template with AutoCAD COM and cast the modelspace `AcDbTable` entity to `IAcadTable`.
+3. Do not draw a replacement table and do not explode the table.
+4. Expand the real table columns to match the workbook bond-zone columns, with one `BALANCE` and one `HORIZONTAL REINF.` column preserved per wall group.
+5. Fill only bond-zone body cells from workbook tab `SHEAR WALL TABLE OUTPUT`.
+6. Leave balance-zone and horizontal reinforcement body cells blank unless explicitly requested.
+7. Preserve `SHEAR WALL SCHEDULE` in the title row. Do not place long project names in the merged title row because AutoCAD can auto-grow the row and overlap the notes.
+8. After all merges and fills, explicitly restore template-scale geometry:
+   - row heights: title/header/body rows at the template heights
+   - title/group text height: about `20.6689`
+   - header/body text height: about `14.8816`
+   - title/group style: `3-16 ANNOTATIVE`
+   - header/body style: `1-8 ANNOTATIVE`
+9. Run `GenerateLayout`, restore row and text heights again, then recompute the table block.
+10. Move the notes block down only if the final table bounding box overlaps it.
+11. Save both DWG and DXF outputs.
+
+Current command pattern:
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\auto-cad-shear-wall-table-fill\scripts\fill_template_autocad_table.py" `
+  --template "C:\Users\gkafka\Documents\table-template.dxf" `
+  --workbook "C:\path\to\shear-wall-design-required-steel.xlsx" `
+  --output-dwg "C:\path\to\out\1025-atlantic-shear-wall-table-filled.dwg" `
+  --output-dxf "C:\path\to\out\1025-atlantic-shear-wall-table-filled.dxf" `
+  --summary "C:\path\to\out\summary.json"
+```
+
+Final QA gates:
+
+- DXF contains one real `ACAD_TABLE` and no loose `LINE`/`TEXT` table replica geometry.
+- AutoCAD COM reopen reports one editable `AcDbTable`.
+- Cell editability smoke test passes by setting and restoring one body cell without saving the test edit.
+- Workbook-to-table filled bond-zone values match exactly.
+- Balance-zone filled count is zero unless explicitly requested.
+- Reopened text heights are still model-space readable, not `0.125`/`0.18` paper-size leftovers.
+- Notes block does not overlap the final table bounding box.
+
+1025 Atlantic accepted benchmark:
+
+- Output iteration: `1025-atlantic-template-fill-iteration-06`
+- Rows/columns: `26 x 21`
+- Bond-zone columns: `14`
+- Workbook filled cell match: `256 / 256`
+- Balance filled count: `0`
