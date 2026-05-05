@@ -126,6 +126,8 @@ Hard requirement:
 - A visual replica made from loose `LINE`, `TEXT`, or `MTEXT` geometry is not acceptable.
 - Use `C:\Users\gkafka\Documents\hello_filled.dxf` and the skill asset `assets/reference-filled-autocad-table.dxf` as the reference for object type/editability.
 - Still verify row count, column count, headers, story labels, and reinforcement values against the ETABS workbook output.
+- Prefer modifying/copying the template table so font, table style, borders, row heights, merged cells, and notes are preserved.
+- Automate bond-zone filling only. Balance-zone cells can remain blank or as preserved template content unless explicitly requested.
 
 Recommended loop:
 
