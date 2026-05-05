@@ -115,3 +115,21 @@ Use SAFE-specific scripts instead of adapting ETABS scripts.
 ```
 
 If temporary model edits or cleanup are needed, keep them narrow and use the SAFE-specific utilities in `scripts/`.
+
+## AutoCAD Shear Wall Table Fill
+
+Use the `auto-cad-shear-wall-table-fill` skill for AutoCAD shear wall schedule table work.
+
+Hard requirement:
+
+- The deliverable must be a real editable AutoCAD `TABLE` / `ACAD_TABLE` object.
+- A visual replica made from loose `LINE`, `TEXT`, or `MTEXT` geometry is not acceptable.
+- Use `C:\Users\gkafka\Documents\hello_filled.dxf` and the skill asset `assets/reference-filled-autocad-table.dxf` as the reference for object type/editability.
+- Still verify row count, column count, headers, story labels, and reinforcement values against the ETABS workbook output.
+
+Recommended loop:
+
+1. Generate a blank/scaled editable AutoCAD table object.
+2. Verify the DXF contains an `ACAD_TABLE`.
+3. Review row/column geometry in AutoCAD.
+4. Fill reinforcement from `SHEAR WALL TABLE OUTPUT` only after the blank table is accepted.
